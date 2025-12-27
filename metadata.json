@@ -1,0 +1,7 @@
+{
+  "name": "FixTrax - VinylRevive AI - Studio Mastering Rack",
+  "description": "A professional-grade AI audio restoration suite designed specifically for vinyl-derived recordings. Features high-fidelity hiss suppression, click/pop filtering, transient energy recovery, and Gemini-driven spectral synthesis for a modern studio finish.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
