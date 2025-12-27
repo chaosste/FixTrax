@@ -11,12 +11,17 @@ export interface AudioSettings {
   humQ: number;              // 5-50
   transientRecovery: number; // 0-100
   spectralSynth: number;     // 0-100 (Generative high-frequency reconstruction)
+  deReverb: number;          // 0-100 (Sustain reduction/dryness)
   
   // Tone & Color (Module 02)
   bassBoost: number;         // -10 to +10 dB
   midGain: number;           // -10 to +10 dB
   airGain: number;           // -10 to +10 dB (High shelf)
   warmth: number;            // 0-100 (Saturation)
+  
+  // Stereo & Spatial (Module 03)
+  stereoWidth: number;       // 0-200% (100% is neutral)
+  monoToggle: boolean;       // Phase/Mono check
   
   // Master
   masterGain: number;        // -20 to +6 dB

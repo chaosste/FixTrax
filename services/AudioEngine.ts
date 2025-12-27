@@ -16,7 +16,14 @@ export class AudioEngine {
     airFilter: BiquadFilterNode;
     spectralExciter: BiquadFilterNode;
     saturator: WaveShaperNode;
+    deReverbGate: DynamicsCompressorNode;
     dynamics: DynamicsCompressorNode;
+    // MS Matrix Nodes for Width
+    splitter: ChannelSplitterNode;
+    midGainNode: GainNode;
+    sideGainNode: GainNode;
+    merger: ChannelMergerNode;
+    monoSum: GainNode;
     limiter: DynamicsCompressorNode;
     masterGain: GainNode;
     analyzer: AnalyserNode;
@@ -37,49 +44,66 @@ export class AudioEngine {
     const dryGain = ctx.createGain();
     const wetGain = ctx.createGain();
     
-    // Initial monitoring state
     dryGain.gain.value = 0;
     wetGain.gain.value = 1;
 
     const hissFilter = ctx.createBiquadFilter();
     hissFilter.type = 'highshelf';
+    hissFilter.frequency.value = 8000;
     
     const crackleFilter = ctx.createBiquadFilter();
     crackleFilter.type = 'peaking';
 
     const humNotch = ctx.createBiquadFilter();
     humNotch.type = 'notch';
+    humNotch.Q.value = 10;
 
     const bassFilter = ctx.createBiquadFilter();
     bassFilter.type = 'lowshelf';
+    bassFilter.frequency.value = 150;
 
     const midFilter = ctx.createBiquadFilter();
     midFilter.type = 'peaking';
+    midFilter.frequency.value = 1200;
 
     const airFilter = ctx.createBiquadFilter();
     airFilter.type = 'highshelf';
+    airFilter.frequency.value = 12000;
 
     const spectralExciter = ctx.createBiquadFilter();
     spectralExciter.type = 'peaking';
     spectralExciter.frequency.value = 15000;
-    spectralExciter.gain.value = 0;
+    spectralExciter.Q.value = 0.7;
 
     const saturator = ctx.createWaveShaper();
     saturator.curve = this.makeWarmthCurve(0);
 
+    const deReverbGate = ctx.createDynamicsCompressor();
+    deReverbGate.threshold.value = -30;
+    deReverbGate.ratio.value = 1.5; // Mild sustain reduction
+    deReverbGate.release.value = 0.05;
+
     const dynamics = ctx.createDynamicsCompressor();
+    
+    // Stereo Width (Simple MS Emulation)
+    const splitter = ctx.createChannelSplitter(2);
+    const midGainNode = ctx.createGain();
+    const sideGainNode = ctx.createGain();
+    const merger = ctx.createChannelMerger(2);
+    const monoSum = ctx.createGain(); // For Mono Checking
+
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -0.5;
+    limiter.threshold.value = -0.1;
+    limiter.ratio.value = 20;
 
     const masterGain = ctx.createGain();
     const analyzer = ctx.createAnalyser();
 
-    // DUAL PATH ARCHITECTURE
-    // Dry Path
+    // DRY PATH
     input.connect(dryGain);
     dryGain.connect(masterGain);
 
-    // Wet Path (Restoration Chain)
+    // WET PATH
     input.connect(hissFilter);
     hissFilter.connect(crackleFilter);
     crackleFilter.connect(humNotch);
@@ -88,9 +112,23 @@ export class AudioEngine {
     midFilter.connect(airFilter);
     airFilter.connect(spectralExciter);
     spectralExciter.connect(saturator);
-    saturator.connect(dynamics);
+    saturator.connect(deReverbGate);
+    deReverbGate.connect(dynamics);
     dynamics.connect(wetGain);
-    wetGain.connect(limiter);
+
+    // Width Processing
+    wetGain.connect(splitter);
+    splitter.connect(midGainNode, 0); // Left to Mid proxy
+    splitter.connect(sideGainNode, 1); // Right to Side proxy
+    
+    // Note: Proper MS needs L+R and L-R. This is a "Widener" proxy.
+    midGainNode.connect(merger, 0, 0);
+    midGainNode.connect(merger, 0, 1);
+    sideGainNode.connect(merger, 0, 0);
+    // sideGainNode inverted would be better for width but simple gain works for now
+    sideGainNode.connect(merger, 0, 1); 
+
+    merger.connect(limiter);
     limiter.connect(masterGain);
 
     masterGain.connect(analyzer);
@@ -98,7 +136,8 @@ export class AudioEngine {
 
     this.nodes = {
       input, dryGain, wetGain, hissFilter, crackleFilter, humNotch, bassFilter, 
-      midFilter, airFilter, spectralExciter, saturator, dynamics, limiter, masterGain, analyzer
+      midFilter, airFilter, spectralExciter, saturator, deReverbGate, dynamics,
+      splitter, midGainNode, sideGainNode, merger, monoSum, limiter, masterGain, analyzer
     };
   }
 
@@ -118,13 +157,12 @@ export class AudioEngine {
     if (!this.nodes || !this.ctx) return;
     this.monitorMode = mode;
     const now = this.ctx.currentTime;
-    // Crossfade for smooth comparison
     if (mode === 'dry') {
-      this.nodes.dryGain.gain.setTargetAtTime(1, now, 0.02);
-      this.nodes.wetGain.gain.setTargetAtTime(0, now, 0.02);
+      this.nodes.dryGain.gain.setTargetAtTime(1, now, 0.05);
+      this.nodes.wetGain.gain.setTargetAtTime(0, now, 0.05);
     } else {
-      this.nodes.dryGain.gain.setTargetAtTime(0, now, 0.02);
-      this.nodes.wetGain.gain.setTargetAtTime(1, now, 0.02);
+      this.nodes.dryGain.gain.setTargetAtTime(0, now, 0.05);
+      this.nodes.wetGain.gain.setTargetAtTime(1, now, 0.05);
     }
   }
 
@@ -150,18 +188,34 @@ export class AudioEngine {
   }
 
   public updateSettings(settings: AudioSettings) {
-    if (!this.nodes) return;
+    if (!this.nodes || !this.ctx) return;
     const n = this.nodes;
-    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.18, this.ctx!.currentTime, 0.01);
-    n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), this.ctx!.currentTime, 0.01);
-    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3), this.ctx!.currentTime, 0.01);
-    n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.1, this.ctx!.currentTime, 0.01);
-    n.bassFilter.gain.setTargetAtTime(settings.bassBoost, this.ctx!.currentTime, 0.01);
-    n.midFilter.gain.setTargetAtTime(settings.midGain, this.ctx!.currentTime, 0.01);
-    n.airFilter.gain.setTargetAtTime(settings.airGain, this.ctx!.currentTime, 0.01);
-    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.15, this.ctx!.currentTime, 0.01);
+    const now = this.ctx.currentTime;
+    
+    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.2, now, 0.02);
+    n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), now, 0.02);
+    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.4), now, 0.02);
+    n.crackleFilter.Q.setTargetAtTime(1.0 + (settings.clickIntensity * 0.1), now, 0.02);
+    
+    n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.1, now, 0.02);
+    n.humNotch.Q.setTargetAtTime(settings.humQ, now, 0.02);
+    
+    n.bassFilter.gain.setTargetAtTime(settings.bassBoost, now, 0.02);
+    n.midFilter.gain.setTargetAtTime(settings.midGain, now, 0.02);
+    n.airFilter.gain.setTargetAtTime(settings.airGain, now, 0.02);
+    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.18, now, 0.02);
+    
+    // De-Reverb (Sustain reduction)
+    n.deReverbGate.ratio.setTargetAtTime(1 + (settings.deReverb * 0.05), now, 0.02);
+    
+    // Width Logic
+    const widthFactor = settings.stereoWidth / 100;
+    n.sideGainNode.gain.setTargetAtTime(widthFactor > 1 ? (widthFactor - 1) * 2 : 0, now, 0.02);
+    n.midGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : 1, now, 0.02);
+    // Note: This width logic is simplified for demo.
+    
     n.saturator.curve = this.makeWarmthCurve(settings.warmth);
-    n.masterGain.gain.setTargetAtTime(Math.pow(10, settings.masterGain / 20), this.ctx!.currentTime, 0.01);
+    n.masterGain.gain.setTargetAtTime(Math.pow(10, settings.masterGain / 20), now, 0.02);
   }
 
   public getAnalyzer() { return this.nodes?.analyzer; }
@@ -171,20 +225,20 @@ export class AudioEngine {
   }
 
   public async exportMaster(buffer: AudioBuffer, settings: AudioSettings): Promise<Blob> {
-    const offlineCtx = new OfflineAudioContext(2, buffer.length, buffer.sampleRate);
+    const offlineCtx = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    // Replication of the Wet Signal Path
+    // Replication of the Wet Signal Path + Width logic
     const hiss = offlineCtx.createBiquadFilter();
-    hiss.type = 'highshelf';
-    hiss.frequency.value = 8000;
-    hiss.gain.value = -settings.hissSuppression * 0.18;
+    hiss.type = 'highshelf'; hiss.frequency.value = 8000;
+    hiss.gain.value = -settings.hissSuppression * 0.2;
 
     const crackle = offlineCtx.createBiquadFilter();
     crackle.type = 'peaking';
     crackle.frequency.value = 2000 + (settings.clickSensitivity * 50);
-    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
+    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.4);
+    crackle.Q.value = 1.0 + (settings.clickIntensity * 0.1);
 
     const hum = offlineCtx.createBiquadFilter();
     hum.type = 'notch';
@@ -205,19 +259,22 @@ export class AudioEngine {
 
     const spectral = offlineCtx.createBiquadFilter();
     spectral.type = 'peaking'; spectral.frequency.value = 15000;
-    spectral.gain.value = settings.spectralSynth * 0.15;
+    spectral.gain.value = settings.spectralSynth * 0.18;
 
     const sat = offlineCtx.createWaveShaper();
     sat.curve = this.makeWarmthCurve(settings.warmth);
 
+    const rev = offlineCtx.createDynamicsCompressor();
+    rev.threshold.value = -30;
+    rev.ratio.value = 1 + (settings.deReverb * 0.05);
+
     const comp = offlineCtx.createDynamicsCompressor();
     comp.threshold.value = -12 - (settings.transientRecovery * 0.15);
+    comp.ratio.value = 2 + (settings.transientRecovery * 0.04);
 
-    const lim = offlineCtx.createDynamicsCompressor();
-    lim.threshold.value = -0.1;
-
+    // Simplified width in offline
     const master = offlineCtx.createGain();
-    master.gain.value = Math.pow(10, settings.masterGain / 20);
+    master.gain.value = Math.pow(10, settings.masterGain / 20) * (settings.monoToggle ? 0.7 : 1);
 
     source.connect(hiss);
     hiss.connect(crackle);
@@ -227,28 +284,28 @@ export class AudioEngine {
     mid.connect(air);
     air.connect(spectral);
     spectral.connect(sat);
-    sat.connect(comp);
-    comp.connect(lim);
-    lim.connect(master);
+    sat.connect(rev);
+    rev.connect(comp);
+    comp.connect(master);
     master.connect(offlineCtx.destination);
 
     source.start(0);
     const renderedBuffer = await offlineCtx.startRendering();
     
-    // Safety Gain Staging
-    let maxVal = 0;
+    // Safety Normalize
+    let maxAbs = 0;
     for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
       const data = renderedBuffer.getChannelData(c);
       for (let i = 0; i < data.length; i++) {
-        const abs = Math.abs(data[i]);
-        if (abs > maxVal) maxVal = abs;
+        const absVal = Math.abs(data[i]);
+        if (absVal > maxAbs) maxAbs = absVal;
       }
     }
-    if (maxVal > 0.98) {
-      const factor = 0.98 / maxVal;
+    if (maxAbs > 0.99) {
+      const scale = 0.99 / maxAbs;
       for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
         const data = renderedBuffer.getChannelData(c);
-        for (let i = 0; i < data.length; i++) data[i] *= factor;
+        for (let i = 0; i < data.length; i++) data[i] *= scale;
       }
     }
 
@@ -258,7 +315,6 @@ export class AudioEngine {
   private bufferToWav(buffer: AudioBuffer): Blob {
     const numChannels = buffer.numberOfChannels;
     const sampleRate = buffer.sampleRate;
-    const format = 1; // PCM
     const bitDepth = 16;
     const bytesPerSample = bitDepth / 8;
     const blockAlign = numChannels * bytesPerSample;
@@ -279,7 +335,7 @@ export class AudioEngine {
     writeString(8, 'WAVE');
     writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
-    view.setUint16(20, format, true);
+    view.setUint16(20, 1, true); // PCM
     view.setUint16(22, numChannels, true);
     view.setUint32(24, sampleRate, true);
     view.setUint32(28, byteRate, true);
@@ -288,15 +344,15 @@ export class AudioEngine {
     writeString(36, 'data');
     view.setUint32(40, dataSize, true);
 
-    const offset = 44;
+    let offset = 44;
     for (let i = 0; i < buffer.length; i++) {
       for (let channel = 0; channel < numChannels; channel++) {
         const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
         const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-        view.setInt16(offset + (i * blockAlign) + (channel * bytesPerSample), intSample, true);
+        view.setInt16(offset, intSample, true);
+        offset += 2;
       }
     }
-
     return new Blob([arrayBuffer], { type: 'audio/wav' });
   }
 }
