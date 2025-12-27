@@ -8,9 +8,11 @@ export class AudioEngine {
     gainStaging: GainNode;
     hissFilter: BiquadFilterNode;
     crackleFilter: BiquadFilterNode;
+    humNotch: BiquadFilterNode;
     bassFilter: BiquadFilterNode;
     midFilter: BiquadFilterNode;
     airFilter: BiquadFilterNode;
+    spectralExciter: BiquadFilterNode; // New: Part of generative synth logic
     saturator: WaveShaperNode;
     dynamics: DynamicsCompressorNode;
     limiter: DynamicsCompressorNode;
@@ -25,8 +27,8 @@ export class AudioEngine {
 
   private setupSignalChain() {
     if (!this.ctx) return;
-
     const ctx = this.ctx;
+
     const gainStaging = ctx.createGain();
     gainStaging.gain.value = 0.707;
 
@@ -36,8 +38,9 @@ export class AudioEngine {
 
     const crackleFilter = ctx.createBiquadFilter();
     crackleFilter.type = 'peaking';
-    crackleFilter.frequency.value = 3500;
-    crackleFilter.Q.value = 1.5;
+
+    const humNotch = ctx.createBiquadFilter();
+    humNotch.type = 'notch';
 
     const bassFilter = ctx.createBiquadFilter();
     bassFilter.type = 'lowshelf';
@@ -46,37 +49,38 @@ export class AudioEngine {
     const midFilter = ctx.createBiquadFilter();
     midFilter.type = 'peaking';
     midFilter.frequency.value = 1200;
-    midFilter.Q.value = 0.8;
 
     const airFilter = ctx.createBiquadFilter();
     airFilter.type = 'highshelf';
     airFilter.frequency.value = 12000;
 
+    const spectralExciter = ctx.createBiquadFilter();
+    spectralExciter.type = 'peaking';
+    spectralExciter.frequency.value = 15000;
+    spectralExciter.Q.value = 1.0;
+    spectralExciter.gain.value = 0;
+
     const saturator = ctx.createWaveShaper();
     saturator.curve = this.makeWarmthCurve(0);
 
     const dynamics = ctx.createDynamicsCompressor();
-    dynamics.threshold.value = -12;
-    dynamics.ratio.value = 3;
-    dynamics.attack.value = 0.005;
-    dynamics.release.value = 0.150;
-
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -0.5;
     limiter.ratio.value = 20;
-    limiter.attack.value = 0.001;
-    limiter.release.value = 0.1;
 
     const masterGain = ctx.createGain();
     const analyzer = ctx.createAnalyser();
     analyzer.fftSize = 2048;
 
+    // Chain: Gain -> Hiss -> Crackle -> Hum -> Bass -> Mid -> Air -> Exciter -> Sat -> Comp -> Lim -> Master
     gainStaging.connect(hissFilter);
     hissFilter.connect(crackleFilter);
-    crackleFilter.connect(bassFilter);
+    crackleFilter.connect(humNotch);
+    humNotch.connect(bassFilter);
     bassFilter.connect(midFilter);
     midFilter.connect(airFilter);
-    airFilter.connect(saturator);
+    airFilter.connect(spectralExciter);
+    spectralExciter.connect(saturator);
     saturator.connect(dynamics);
     dynamics.connect(limiter);
     limiter.connect(masterGain);
@@ -84,8 +88,8 @@ export class AudioEngine {
     analyzer.connect(ctx.destination);
 
     this.nodes = {
-      gainStaging, hissFilter, crackleFilter, bassFilter, midFilter, 
-      airFilter, saturator, dynamics, limiter, masterGain, analyzer
+      gainStaging, hissFilter, crackleFilter, humNotch, bassFilter, midFilter, 
+      airFilter, spectralExciter, saturator, dynamics, limiter, masterGain, analyzer
     };
   }
 
@@ -126,18 +130,26 @@ export class AudioEngine {
     if (!this.nodes) return;
     const n = this.nodes;
 
-    // Adaptive Hiss (Adjusts Q based on intensity to be less muffled at low settings)
     n.hissFilter.gain.value = -settings.hissSuppression * 0.18; 
     n.hissFilter.Q.value = 0.5 + (settings.hissSuppression / 100);
 
-    // Crackle & Sensitivity
-    n.crackleFilter.gain.value = -settings.crackleSuppression * 0.12;
-    n.crackleFilter.frequency.value = 3500 + (settings.clickSensitivity * 10);
+    // Crackle Filter Logic: Intensity increases Q and Depth
+    // Sensitivity targets specific frequency bands (higher = more treble focus)
+    n.crackleFilter.frequency.value = 2000 + (settings.clickSensitivity * 50);
+    n.crackleFilter.Q.value = 1.0 + (settings.clickIntensity * 0.15);
+    n.crackleFilter.gain.value = - (settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
+    
+    // Hum Notch
+    n.humNotch.frequency.value = settings.humRemoval ? settings.humFrequency : 0.1;
+    n.humNotch.Q.value = settings.humQ;
     
     // Tone
     n.bassFilter.gain.value = settings.bassBoost;
     n.midFilter.gain.value = settings.midGain;
     n.airFilter.gain.value = settings.airGain;
+
+    // Spectral Synth (Generative Simulation)
+    n.spectralExciter.gain.value = settings.spectralSynth * 0.15;
     
     // Saturation
     n.saturator.curve = this.makeWarmthCurve(settings.warmth);
@@ -161,14 +173,25 @@ export class AudioEngine {
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    const gainStaging = offlineCtx.createGain();
-    gainStaging.gain.value = 0.707;
+    // Automatic Gain Staging (Headroom Analysis)
+    const peakAnalysisNode = offlineCtx.createGain();
+    peakAnalysisNode.gain.value = 0.8; // Safe starting point (-2dB)
 
     const hiss = offlineCtx.createBiquadFilter();
     hiss.type = 'highshelf';
     hiss.frequency.value = 8000;
     hiss.gain.value = -settings.hissSuppression * 0.18;
-    hiss.Q.value = 0.5 + (settings.hissSuppression / 100);
+
+    const crackle = offlineCtx.createBiquadFilter();
+    crackle.type = 'peaking';
+    crackle.frequency.value = 2000 + (settings.clickSensitivity * 50);
+    crackle.Q.value = 1.0 + (settings.clickIntensity * 0.15);
+    crackle.gain.value = - (settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
+
+    const hum = offlineCtx.createBiquadFilter();
+    hum.type = 'notch';
+    hum.frequency.value = settings.humRemoval ? settings.humFrequency : 0.1;
+    hum.Q.value = settings.humQ;
 
     const bass = offlineCtx.createBiquadFilter();
     bass.type = 'lowshelf'; bass.frequency.value = 150;
@@ -194,9 +217,11 @@ export class AudioEngine {
     const master = offlineCtx.createGain();
     master.gain.value = Math.pow(10, settings.masterGain / 20);
 
-    source.connect(gainStaging);
-    gainStaging.connect(hiss);
-    hiss.connect(bass);
+    source.connect(peakAnalysisNode);
+    peakAnalysisNode.connect(hiss);
+    hiss.connect(crackle);
+    crackle.connect(hum);
+    hum.connect(bass);
     bass.connect(mid);
     mid.connect(air);
     air.connect(sat);
@@ -207,6 +232,27 @@ export class AudioEngine {
 
     source.start(0);
     const renderedBuffer = await offlineCtx.startRendering();
+
+    // Headroom Correction
+    let maxVal = 0;
+    for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
+      const data = renderedBuffer.getChannelData(c);
+      for (let i = 0; i < data.length; i++) {
+        const abs = Math.abs(data[i]);
+        if (abs > maxVal) maxVal = abs;
+      }
+    }
+
+    if (maxVal > 0.95) {
+      const factor = 0.95 / maxVal;
+      for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
+        const data = renderedBuffer.getChannelData(c);
+        for (let i = 0; i < data.length; i++) {
+          data[i] *= factor;
+        }
+      }
+    }
+    
     return this.bufferToWav(renderedBuffer);
   }
 
@@ -220,9 +266,6 @@ export class AudioEngine {
     let offset = 0;
     let pos = 0;
 
-    const setUint32 = (data: number) => { view.setUint32(pos, data, true); pos += 4; };
-    const setUint16 = (data: number) => { view.setUint16(pos, data, true); pos += 2; };
-    
     let p = 0;
     function writeString(s: string) {
       for (let i = 0; i < s.length; i++) {
@@ -231,19 +274,20 @@ export class AudioEngine {
       p += s.length;
     }
 
-    writeString('RIFF'); p += 0;
-    view.setUint32(4, 36 + buffer.length * numOfChan * 2, true); p += 4;
-    writeString('WAVE'); p += 4;
-    writeString('fmt '); p += 4;
-    view.setUint32(16, 16, true); p += 4;
-    view.setUint16(20, 1, true); p += 2;
-    view.setUint16(22, numOfChan, true); p += 2;
-    view.setUint32(24, buffer.sampleRate, true); p += 4;
-    view.setUint32(28, buffer.sampleRate * 2 * numOfChan, true); p += 4;
-    view.setUint16(32, numOfChan * 2, true); p += 2;
-    view.setUint16(34, 16, true); p += 2;
-    writeString('data'); p += 4;
-    view.setUint32(40, buffer.length * numOfChan * 2, true); p += 4;
+    writeString('RIFF');
+    view.setUint32(4, 36 + buffer.length * numOfChan * 2, true);
+    writeString('WAVE');
+    writeString('fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numOfChan, true);
+    view.setUint32(24, buffer.sampleRate, true);
+    view.setUint32(28, buffer.sampleRate * 2 * numOfChan, true);
+    view.setUint16(32, numOfChan * 2, true);
+    view.setUint16(34, 16, true);
+    writeString('data');
+    view.setUint32(40, buffer.length * numOfChan * 2, true);
+    p = 44;
 
     for (i = 0; i < buffer.numberOfChannels; i++)
         channels.push(buffer.getChannelData(i));

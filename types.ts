@@ -5,8 +5,12 @@ export interface AudioSettings {
   crackleSuppression: number; // 0-100
   clickFiltering: number;    // 0-100
   clickSensitivity: number;  // 0-100
+  clickIntensity: number;    // 0-100
   humRemoval: boolean;
+  humFrequency: number;      // 45-75 Hz
+  humQ: number;              // 5-50
   transientRecovery: number; // 0-100
+  spectralSynth: number;     // 0-100 (Generative high-frequency reconstruction)
   
   // Tone & Color (Module 02)
   bassBoost: number;         // -10 to +10 dB
@@ -18,8 +22,9 @@ export interface AudioSettings {
   masterGain: number;        // -20 to +6 dB
   limiterThreshold: number;  // -20 to 0 dB
   
-  // AI Specific
-  isAiMode: boolean;
+  // UI/Control Logic
+  isAiMode: boolean;         // Active profile is AI-derived
+  autoReviveMode: boolean;   // If true, auto-apply AI suggestions on load
   aiInsight?: string;
 }
 
