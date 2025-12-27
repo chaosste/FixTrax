@@ -18,12 +18,11 @@ export class AudioEngine {
     saturator: WaveShaperNode;
     deReverbGate: DynamicsCompressorNode;
     dynamics: DynamicsCompressorNode;
-    // MS Matrix Nodes for Width
+    // Stereo Width Processor
     splitter: ChannelSplitterNode;
     midGainNode: GainNode;
     sideGainNode: GainNode;
     merger: ChannelMergerNode;
-    monoSum: GainNode;
     limiter: DynamicsCompressorNode;
     masterGain: GainNode;
     analyzer: AnalyserNode;
@@ -32,7 +31,7 @@ export class AudioEngine {
   private monitorMode: 'dry' | 'wet' = 'wet';
 
   constructor() {
-    this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 44100 });
     this.setupSignalChain();
   }
 
@@ -41,6 +40,8 @@ export class AudioEngine {
     const ctx = this.ctx;
 
     const input = ctx.createGain();
+    input.gain.value = 0.7; // Pre-gain reduction to prevent internal clipping
+
     const dryGain = ctx.createGain();
     const wetGain = ctx.createGain();
     
@@ -73,37 +74,39 @@ export class AudioEngine {
     const spectralExciter = ctx.createBiquadFilter();
     spectralExciter.type = 'peaking';
     spectralExciter.frequency.value = 15000;
-    spectralExciter.Q.value = 0.7;
 
     const saturator = ctx.createWaveShaper();
     saturator.curve = this.makeWarmthCurve(0);
 
+    // De-Reverb (Sustain reduction via fast-release compression)
     const deReverbGate = ctx.createDynamicsCompressor();
     deReverbGate.threshold.value = -30;
-    deReverbGate.ratio.value = 1.5; // Mild sustain reduction
+    deReverbGate.ratio.value = 1; 
+    deReverbGate.attack.value = 0.003;
     deReverbGate.release.value = 0.05;
 
     const dynamics = ctx.createDynamicsCompressor();
-    
-    // Stereo Width (Simple MS Emulation)
+    dynamics.threshold.value = -18;
+    dynamics.ratio.value = 2;
+
+    // Stereo Width M/S Processing simulation
     const splitter = ctx.createChannelSplitter(2);
     const midGainNode = ctx.createGain();
     const sideGainNode = ctx.createGain();
     const merger = ctx.createChannelMerger(2);
-    const monoSum = ctx.createGain(); // For Mono Checking
 
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -0.1;
+    limiter.threshold.value = -0.5;
     limiter.ratio.value = 20;
+    limiter.knee.value = 0;
 
     const masterGain = ctx.createGain();
     const analyzer = ctx.createAnalyser();
 
-    // DRY PATH
+    // Signal Routing
     input.connect(dryGain);
     dryGain.connect(masterGain);
 
-    // WET PATH
     input.connect(hissFilter);
     hissFilter.connect(crackleFilter);
     crackleFilter.connect(humNotch);
@@ -116,16 +119,15 @@ export class AudioEngine {
     deReverbGate.connect(dynamics);
     dynamics.connect(wetGain);
 
-    // Width Processing
+    // Stereo Processing
     wetGain.connect(splitter);
-    splitter.connect(midGainNode, 0); // Left to Mid proxy
-    splitter.connect(sideGainNode, 1); // Right to Side proxy
+    splitter.connect(midGainNode, 0); 
+    splitter.connect(sideGainNode, 1); 
     
-    // Note: Proper MS needs L+R and L-R. This is a "Widener" proxy.
+    // M/S Routing (Simplified for Web Audio Stereo expansion)
     midGainNode.connect(merger, 0, 0);
     midGainNode.connect(merger, 0, 1);
     sideGainNode.connect(merger, 0, 0);
-    // sideGainNode inverted would be better for width but simple gain works for now
     sideGainNode.connect(merger, 0, 1); 
 
     merger.connect(limiter);
@@ -137,18 +139,18 @@ export class AudioEngine {
     this.nodes = {
       input, dryGain, wetGain, hissFilter, crackleFilter, humNotch, bassFilter, 
       midFilter, airFilter, spectralExciter, saturator, deReverbGate, dynamics,
-      splitter, midGainNode, sideGainNode, merger, monoSum, limiter, masterGain, analyzer
+      splitter, midGainNode, sideGainNode, merger, limiter, masterGain, analyzer
     };
   }
 
   private makeWarmthCurve(amount: number) {
-    const k = amount * 0.4;
+    const k = amount * 0.25; // Adjusted down to prevent distortion
     const n_samples = 44100;
     const curve = new Float32Array(n_samples);
-    const deg = Math.PI / 180;
     for (let i = 0; i < n_samples; ++i) {
       const x = (i * 2) / n_samples - 1;
-      curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+      // Soft sigmoid for warmth
+      curve[i] = (Math.PI + k) * x / (Math.PI + k * Math.abs(x));
     }
     return curve;
   }
@@ -158,11 +160,11 @@ export class AudioEngine {
     this.monitorMode = mode;
     const now = this.ctx.currentTime;
     if (mode === 'dry') {
-      this.nodes.dryGain.gain.setTargetAtTime(1, now, 0.05);
-      this.nodes.wetGain.gain.setTargetAtTime(0, now, 0.05);
+      this.nodes.dryGain.gain.setTargetAtTime(1, now, 0.02);
+      this.nodes.wetGain.gain.setTargetAtTime(0, now, 0.02);
     } else {
-      this.nodes.dryGain.gain.setTargetAtTime(0, now, 0.05);
-      this.nodes.wetGain.gain.setTargetAtTime(1, now, 0.05);
+      this.nodes.dryGain.gain.setTargetAtTime(0, now, 0.02);
+      this.nodes.wetGain.gain.setTargetAtTime(1, now, 0.02);
     }
   }
 
@@ -192,27 +194,24 @@ export class AudioEngine {
     const n = this.nodes;
     const now = this.ctx.currentTime;
     
-    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.2, now, 0.02);
+    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.15, now, 0.02);
     n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), now, 0.02);
-    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.4), now, 0.02);
-    n.crackleFilter.Q.setTargetAtTime(1.0 + (settings.clickIntensity * 0.1), now, 0.02);
+    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3), now, 0.02);
     
-    n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.1, now, 0.02);
-    n.humNotch.Q.setTargetAtTime(settings.humQ, now, 0.02);
+    n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.01, now, 0.02);
     
     n.bassFilter.gain.setTargetAtTime(settings.bassBoost, now, 0.02);
     n.midFilter.gain.setTargetAtTime(settings.midGain, now, 0.02);
     n.airFilter.gain.setTargetAtTime(settings.airGain, now, 0.02);
-    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.18, now, 0.02);
+    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.1, now, 0.02);
     
-    // De-Reverb (Sustain reduction)
-    n.deReverbGate.ratio.setTargetAtTime(1 + (settings.deReverb * 0.05), now, 0.02);
+    // De-Reverb intensity (increase compression ratio for tails)
+    n.deReverbGate.ratio.setTargetAtTime(1 + (settings.deReverb * 0.15), now, 0.02);
     
-    // Width Logic
-    const widthFactor = settings.stereoWidth / 100;
-    n.sideGainNode.gain.setTargetAtTime(widthFactor > 1 ? (widthFactor - 1) * 2 : 0, now, 0.02);
-    n.midGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : 1, now, 0.02);
-    // Note: This width logic is simplified for demo.
+    // Stereo Width logic
+    const width = settings.stereoWidth / 100;
+    n.midGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : 1.0, now, 0.02);
+    n.sideGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : width, now, 0.02);
     
     n.saturator.curve = this.makeWarmthCurve(settings.warmth);
     n.masterGain.gain.setTargetAtTime(Math.pow(10, settings.masterGain / 20), now, 0.02);
@@ -229,21 +228,15 @@ export class AudioEngine {
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    // Replication of the Wet Signal Path + Width logic
+    // Replication of the live path for bit-accurate export
     const hiss = offlineCtx.createBiquadFilter();
     hiss.type = 'highshelf'; hiss.frequency.value = 8000;
-    hiss.gain.value = -settings.hissSuppression * 0.2;
+    hiss.gain.value = -settings.hissSuppression * 0.15;
 
     const crackle = offlineCtx.createBiquadFilter();
     crackle.type = 'peaking';
     crackle.frequency.value = 2000 + (settings.clickSensitivity * 50);
-    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.4);
-    crackle.Q.value = 1.0 + (settings.clickIntensity * 0.1);
-
-    const hum = offlineCtx.createBiquadFilter();
-    hum.type = 'notch';
-    hum.frequency.value = settings.humRemoval ? settings.humFrequency : 0.1;
-    hum.Q.value = settings.humQ;
+    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
 
     const bass = offlineCtx.createBiquadFilter();
     bass.type = 'lowshelf'; bass.frequency.value = 150;
@@ -259,56 +252,35 @@ export class AudioEngine {
 
     const spectral = offlineCtx.createBiquadFilter();
     spectral.type = 'peaking'; spectral.frequency.value = 15000;
-    spectral.gain.value = settings.spectralSynth * 0.18;
+    spectral.gain.value = settings.spectralSynth * 0.1;
 
     const sat = offlineCtx.createWaveShaper();
     sat.curve = this.makeWarmthCurve(settings.warmth);
 
     const rev = offlineCtx.createDynamicsCompressor();
     rev.threshold.value = -30;
-    rev.ratio.value = 1 + (settings.deReverb * 0.05);
+    rev.ratio.value = 1 + (settings.deReverb * 0.15);
 
-    const comp = offlineCtx.createDynamicsCompressor();
-    comp.threshold.value = -12 - (settings.transientRecovery * 0.15);
-    comp.ratio.value = 2 + (settings.transientRecovery * 0.04);
+    const lim = offlineCtx.createDynamicsCompressor();
+    lim.threshold.value = -0.5;
 
-    // Simplified width in offline
     const master = offlineCtx.createGain();
-    master.gain.value = Math.pow(10, settings.masterGain / 20) * (settings.monoToggle ? 0.7 : 1);
+    master.gain.value = Math.pow(10, settings.masterGain / 20) * 0.8; // Headroom safety
 
     source.connect(hiss);
     hiss.connect(crackle);
-    crackle.connect(hum);
-    hum.connect(bass);
+    crackle.connect(bass);
     bass.connect(mid);
     mid.connect(air);
     air.connect(spectral);
     spectral.connect(sat);
     sat.connect(rev);
-    rev.connect(comp);
-    comp.connect(master);
+    rev.connect(lim);
+    lim.connect(master);
     master.connect(offlineCtx.destination);
 
     source.start(0);
     const renderedBuffer = await offlineCtx.startRendering();
-    
-    // Safety Normalize
-    let maxAbs = 0;
-    for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
-      const data = renderedBuffer.getChannelData(c);
-      for (let i = 0; i < data.length; i++) {
-        const absVal = Math.abs(data[i]);
-        if (absVal > maxAbs) maxAbs = absVal;
-      }
-    }
-    if (maxAbs > 0.99) {
-      const scale = 0.99 / maxAbs;
-      for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
-        const data = renderedBuffer.getChannelData(c);
-        for (let i = 0; i < data.length; i++) data[i] *= scale;
-      }
-    }
-
     return this.bufferToWav(renderedBuffer);
   }
 

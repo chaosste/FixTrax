@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { AudioEngine } from './services/AudioEngine';
 import { analyzeTrackWithAI } from './services/geminiService';
@@ -49,17 +50,17 @@ const DEFAULT_SETTINGS: AudioSettings = {
 
 const FACTORY_PRESETS: Preset[] = [
   { id: 'standard', name: 'Factory Standard', settings: DEFAULT_SETTINGS },
-  { id: '78rpm', name: '78rpm Shellac', settings: { ...DEFAULT_SETTINGS, hissSuppression: 60, crackleSuppression: 50, airGain: 8, bassBoost: 4, clickIntensity: 60 } },
-  { id: 'club', name: 'Modern Club 12"', settings: { ...DEFAULT_SETTINGS, bassBoost: 6, airGain: 3, transientRecovery: 45, warmth: 20, clickIntensity: 20, stereoWidth: 130 } },
+  { id: 'modern-club', name: 'Modern Club 12"', settings: { ...DEFAULT_SETTINGS, bassBoost: 4, airGain: 3, transientRecovery: 40, stereoWidth: 125, warmth: 20 } },
+  { id: '78rpm', name: '78rpm Clean', settings: { ...DEFAULT_SETTINGS, hissSuppression: 65, airGain: 6, crackleSuppression: 50 } },
 ];
 
 const App: React.FC = () => {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AudioSettings>(DEFAULT_SETTINGS);
+  const [comparisonBase, setComparisonBase] = useState<AudioSettings | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [batchExporting, setBatchExporting] = useState(false);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [showAiPanel, setShowAiPanel] = useState(true);
   const [monitorMode, setMonitorMode] = useState<'dry' | 'wet'>('wet');
@@ -87,9 +88,6 @@ const App: React.FC = () => {
     const matched = presets.find(p => {
       return p.settings.hissSuppression === settings.hissSuppression &&
              p.settings.bassBoost === settings.bassBoost &&
-             p.settings.airGain === settings.airGain &&
-             p.settings.warmth === settings.warmth &&
-             p.settings.crackleSuppression === settings.crackleSuppression &&
              p.settings.stereoWidth === settings.stereoWidth;
     });
     return matched ? matched.id : null;
@@ -120,9 +118,6 @@ const App: React.FC = () => {
       const buffer = await engineRef.current?.loadAudio(track.originalBlob);
       if (buffer) {
         setTracks(prev => prev.map(t => t.id === id ? { ...t, originalBuffer: buffer, status: 'idle' } : t));
-        if (settings.autoReviveMode) {
-           setTimeout(() => handleAiRevive(id), 100);
-        }
       }
     }
     setIsPlaying(false);
@@ -140,30 +135,12 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAiRevive = async (id?: string) => {
-    const targetId = id || activeTrackId;
-    const track = tracks.find(t => t.id === targetId);
-    if (!track) return;
-
-    setTracks(prev => prev.map(t => t.id === track.id ? { ...t, status: 'analyzing' } : t));
-    const aiParams = await analyzeTrackWithAI(track.name);
-    
-    if (track.id === activeTrackId) {
-      setSettings(prev => ({ ...prev, ...aiParams, isAiMode: true }));
-      setMonitorMode('wet');
-      setIsManualApplied(false);
-    }
-    
-    setTracks(prev => prev.map(t => t.id === track.id ? { 
-      ...t, 
-      status: 'idle', 
-      aiProfile: aiParams 
-    } : t));
-  };
-
-  const handleApplyManual = () => {
-    setIsManualApplied(true);
-    setSettings(prev => ({ ...prev, isAiMode: false }));
+  const handleAiRevive = async () => {
+    if (!activeTrack) return;
+    setTracks(prev => prev.map(t => t.id === activeTrack.id ? { ...t, status: 'analyzing' } : t));
+    const aiParams = await analyzeTrackWithAI(activeTrack.name);
+    setSettings(prev => ({ ...prev, ...aiParams, isAiMode: true }));
+    setTracks(prev => prev.map(t => t.id === activeTrack.id ? { ...t, status: 'idle', aiProfile: aiParams } : t));
     setMonitorMode('wet');
   };
 
@@ -176,11 +153,26 @@ const App: React.FC = () => {
     localStorage.setItem('vrevive_presets', JSON.stringify(updated));
   };
 
+  // Fix: Added deletePreset to handle manual preset removal while protecting factory presets
   const deletePreset = (id: string) => {
-    if (id === 'standard' || id === '78rpm' || id === 'club') return;
+    if (FACTORY_PRESETS.some(fp => fp.id === id)) {
+      return;
+    }
     const updated = presets.filter(p => p.id !== id);
     setPresets(updated);
     localStorage.setItem('vrevive_presets', JSON.stringify(updated));
+  };
+
+  const toggleDiff = () => {
+    if (comparisonBase) {
+      setSettings(comparisonBase);
+      setComparisonBase(null);
+    } else {
+      // Find the factory or custom preset to compare against
+      const base = presets.find(p => p.id === activePresetId) || presets[0];
+      setComparisonBase(settings);
+      setSettings(base.settings);
+    }
   };
 
   const handleExport = async () => {
@@ -191,60 +183,26 @@ const App: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `VinylRevive_${activeTrack.name.split('.')[0]}_Mastered.wav`;
+      a.download = `VinylRevive_MASTER_${activeTrack.name.split('.')[0]}.wav`;
       a.click();
-    } catch (err) {
-      console.error(err);
     } finally {
       setExporting(false);
     }
   };
 
-  const handleExportAll = async () => {
-    if (!engineRef.current || tracks.length === 0) return;
-    setBatchExporting(true);
-    try {
-      for (const track of tracks) {
-        if (!track.originalBuffer) {
-           const buffer = await engineRef.current.loadAudio(track.originalBlob);
-           track.originalBuffer = buffer;
-        }
-        const effectiveSettings = track.aiProfile ? { ...settings, ...track.aiProfile } : settings;
-        const blob = await engineRef.current.exportMaster(track.originalBuffer!, effectiveSettings);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `VinylRevive_BATCH_${track.name.split('.')[0]}_Master.wav`;
-        a.click();
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    } finally {
-      setBatchExporting(false);
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500/30">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       <header className="rack-panel h-16 flex items-center justify-between px-8 border-b-4 border-slate-900 z-10">
         <div className="flex items-center space-x-4">
-          <div className="w-4 h-4 rounded-full bg-amber-500 animate-pulse amber-glow"></div>
+          <div className="w-4 h-4 rounded-full bg-amber-500 animate-pulse"></div>
           <h1 className="text-xl font-black tracking-tighter uppercase italic flex items-center">
-            VinylRevive <span className="text-amber-500 ml-2 font-mono">ST-MASTER RACK v2.5</span>
+            VinylRevive <span className="text-amber-500 ml-2 font-mono">ULTRA-MASTER RACK</span>
           </h1>
         </div>
         <div className="flex items-center space-x-6 text-[10px] font-mono font-bold uppercase text-slate-400">
-          <div className="flex items-center space-x-3 bg-slate-900 px-3 py-1.5 rounded-sm border border-slate-800">
-            <span>Revive Mode:</span>
-            <button 
-              onClick={() => setSettings(prev => ({ ...prev, autoReviveMode: !prev.autoReviveMode }))}
-              className={`px-3 py-0.5 rounded transition-all shadow-inner ${settings.autoReviveMode ? 'bg-sky-600 text-white shadow-[0_0_10px_rgba(14,165,233,0.3)]' : 'bg-slate-700 text-slate-400'}`}
-            >
-              {settings.autoReviveMode ? 'AUTO' : 'MANUAL'}
-            </button>
-          </div>
           <div className="flex items-center space-x-2">
-            <span>Engine:</span>
-            <span className="text-green-400">AI-ACCELERATED PCM</span>
+            <span>Revive Mode:</span>
+            <span className="text-amber-500">{settings.isAiMode ? 'AI STEERED' : 'MANUAL CONTROL'}</span>
           </div>
         </div>
       </header>
@@ -257,107 +215,77 @@ const App: React.FC = () => {
             onDrop={(e) => { e.preventDefault(); handleUpload(e.dataTransfer.files); }}
           >
             {!activeTrack ? (
-              <div className="text-center space-y-4">
-                <div className="bg-slate-900 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-700 shadow-2xl">
+              <div className="text-center space-y-6">
+                <div className="bg-slate-900 w-24 h-24 rounded-full flex items-center justify-center mx-auto border border-slate-700 shadow-2xl">
                   <PlusIcon className="w-12 h-12 text-slate-600" />
                 </div>
-                <h3 className="text-xl font-black text-slate-400 uppercase tracking-widest italic">IN NEED OF TUNES</h3>
-                <p className="text-slate-300 text-xs uppercase tracking-[0.2em] font-bold">Drag and drop audio assets here</p>
+                <div className="space-y-1">
+                  <h3 className="text-xl font-black text-slate-400 uppercase tracking-widest italic">Signal Entry</h3>
+                  <p className="text-amber-400 text-xs uppercase tracking-[0.4em] font-black animate-pulse drop-shadow-[0_0_8px_rgba(245,158,11,0.5)]">Drag and drop audio assets here</p>
+                </div>
                 <input type="file" multiple accept="audio/*" className="hidden" id="file-upload" onChange={(e) => handleUpload(e.target.files)} />
-                <label htmlFor="file-upload" className="inline-block mt-4 px-10 py-4 bg-amber-600 hover:bg-amber-500 text-white font-black rounded cursor-pointer transition-all uppercase text-xs tracking-[0.2em] shadow-lg">CHOOSE FILES</label>
+                <label htmlFor="file-upload" className="inline-block mt-4 px-10 py-4 bg-amber-600 hover:bg-amber-500 text-white font-black rounded cursor-pointer transition-all uppercase text-xs tracking-widest shadow-lg active:scale-95">CHOOSE FILES</label>
               </div>
             ) : (
               <div className="w-full h-full flex flex-col">
-                <div className="flex flex-col lg:flex-row justify-between items-start mb-6 gap-4">
+                <div className="flex justify-between items-start mb-6">
                   <div className="flex-1">
-                    <span className="text-[9px] uppercase font-black text-amber-500 tracking-[0.3em] block mb-1">Source Analysis In-Progress</span>
-                    <h2 className="text-2xl font-black text-white truncate max-w-xl tracking-tighter italic leading-tight">{activeTrack.name}</h2>
+                    <span className="text-[9px] uppercase font-black text-amber-500 tracking-widest block mb-1">Source Path Analysis</span>
+                    <h2 className="text-2xl font-black text-white truncate max-w-xl italic">{activeTrack.name}</h2>
                     
-                    <div className="mt-4 flex flex-col space-y-2">
-                       <span className="text-[8px] uppercase font-black text-slate-500 tracking-widest">A/B Monitor Comparison</span>
-                       <div className="flex p-1 bg-slate-900 border border-slate-800 rounded-lg shadow-inner w-fit">
-                         <button 
-                            onClick={() => setMonitorMode('dry')}
-                            className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'dry' ? 'bg-amber-600 text-white shadow-[0_0_15px_rgba(245,158,11,0.4)]' : 'text-slate-500 hover:text-slate-300'}`}
-                         >
-                           <MusicalNoteIcon className="w-3 h-3 mr-2" />
-                           Dry Signal (Input)
-                         </button>
-                         <div className="w-[1px] h-6 bg-slate-800 self-center mx-1"></div>
-                         <button 
-                            onClick={() => setMonitorMode('wet')}
-                            className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'wet' ? 'bg-sky-600 text-white shadow-[0_0_15px_rgba(14,165,233,0.4)]' : 'text-slate-500 hover:text-slate-300'}`}
-                         >
-                           <SpeakerWaveIcon className="w-3 h-3 mr-2" />
-                           Mastered (Output)
-                         </button>
-                       </div>
+                    <div className="mt-4 flex p-1 bg-slate-900 border border-slate-800 rounded-lg shadow-inner w-fit">
+                       <button 
+                          onClick={() => setMonitorMode('dry')}
+                          className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'dry' ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                       >
+                         <MusicalNoteIcon className="w-3 h-3 mr-2" /> Dry (Before)
+                       </button>
+                       <button 
+                          onClick={() => setMonitorMode('wet')}
+                          className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'wet' ? 'bg-sky-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                       >
+                         <SpeakerWaveIcon className="w-3 h-3 mr-2" /> Revived (After)
+                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-3 self-end">
-                    <div className="flex space-x-2">
-                        <button 
-                          onClick={() => handleAiRevive()}
+                  <div className="flex items-center space-x-3">
+                    <div className="flex flex-col items-end space-y-2">
+                       <button 
+                          onClick={handleAiRevive}
                           disabled={activeTrack.status === 'analyzing'}
-                          className={`flex flex-col items-center justify-center px-5 py-3 rounded-md font-black text-[10px] uppercase tracking-[0.1em] transition-all shadow-xl active:scale-95 group relative border-2 ${
-                            settings.isAiMode ? 'bg-sky-600 text-white border-sky-400 shadow-[0_0_20px_rgba(14,165,233,0.4)]' : 'bg-slate-800 text-slate-400 hover:bg-sky-900/40 hover:text-sky-400 border-slate-700'
+                          className={`flex items-center px-5 py-3 rounded-md font-black text-[10px] uppercase tracking-widest transition-all shadow-xl active:scale-95 ${
+                            settings.isAiMode ? 'bg-sky-600 text-white border-2 border-sky-400' : 'bg-slate-800 text-slate-400 border-2 border-slate-700'
                           }`}
-                        >
-                          <div className="flex items-center">
-                            <CpuChipIcon className={`w-4 h-4 mr-2 ${activeTrack.status === 'analyzing' ? 'animate-spin text-sky-400' : ''}`} />
-                            {activeTrack.status === 'analyzing' ? 'SYNTHESIZING...' : 'AI REVIVE'}
-                          </div>
-                          <span className={`text-[6px] mt-1 font-black ${settings.isAiMode ? 'text-sky-200' : 'text-slate-600 group-hover:text-sky-500'}`}>
-                            {settings.isAiMode ? 'AI CONFIG ACTIVE' : 'AUTO-MASTER TRACK'}
-                          </span>
-                        </button>
-
-                        <button 
-                          onClick={handleApplyManual}
-                          className={`flex flex-col items-center justify-center px-5 py-3 rounded-md font-black text-[10px] uppercase tracking-[0.1em] transition-all shadow-xl active:scale-95 group relative border-2 ${
-                            isManualApplied && !settings.isAiMode ? 'bg-amber-600 text-white border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.4)]' : 'bg-slate-800 text-slate-400 hover:bg-amber-900/40 hover:text-amber-500 border-slate-700'
-                          }`}
-                        >
-                          <div className="flex items-center">
-                            <WrenchScrewdriverIcon className="w-4 h-4 mr-2" />
-                            APPLY MANUAL
-                          </div>
-                          <span className={`text-[6px] mt-1 font-black ${isManualApplied && !settings.isAiMode ? 'text-amber-200' : 'text-slate-600 group-hover:text-amber-500'}`}>
-                            {isManualApplied && !settings.isAiMode ? 'MANUAL ACTIVE' : 'USE UI LEVELS'}
-                          </span>
-                        </button>
+                       >
+                          <CpuChipIcon className={`w-4 h-4 mr-2 ${activeTrack.status === 'analyzing' ? 'animate-spin' : ''}`} />
+                          {activeTrack.status === 'analyzing' ? 'SYNTHESIZING...' : 'AI REVIVE'}
+                       </button>
+                       {settings.aiInsight && <span className="text-[7px] text-sky-400/80 font-bold uppercase tracking-tighter max-w-[140px] text-right leading-none">{settings.aiInsight}</span>}
                     </div>
-                    <button onClick={togglePlayback} className="w-14 h-14 rounded-full bg-amber-600 flex items-center justify-center text-white hover:bg-amber-500 transition-all shadow-[0_0_25px_rgba(245,158,11,0.5)] active:scale-90 border-4 border-slate-950">
-                      {isPlaying ? <PauseIcon className="w-7 h-7" /> : <PlayIcon className="w-7 h-7 ml-1" />}
+                    <button onClick={togglePlayback} className="w-16 h-16 rounded-full bg-amber-600 flex items-center justify-center text-white hover:bg-amber-500 transition-all shadow-[0_0_30px_rgba(245,158,11,0.4)] active:scale-90 border-4 border-slate-950">
+                      {isPlaying ? <PauseIcon className="w-8 h-8" /> : <PlayIcon className="w-8 h-8 ml-1" />}
                     </button>
                   </div>
                 </div>
-                {/* Visualizer smaller on desktop */}
-                <div className="h-32 lg:h-40 bg-black/60 rounded-xl border border-slate-800 relative overflow-hidden shadow-inner flex flex-col items-center justify-center">
+                <div className="flex-1 bg-black/60 rounded-xl border border-slate-800 relative overflow-hidden shadow-inner">
                   <Visualizer analyzer={engineRef.current?.getAnalyzer()} isPlaying={isPlaying} />
-                  <div className="absolute bottom-2 left-3 flex items-center space-x-2 bg-black/60 px-2 py-1 rounded border border-slate-800 backdrop-blur-md">
-                     <div className={`w-1.5 h-1.5 rounded-full ${isPlaying ? (monitorMode === 'wet' ? 'bg-sky-500 animate-pulse' : 'bg-amber-500 animate-pulse') : 'bg-slate-700'}`}></div>
-                     <span className="text-[7px] font-black uppercase tracking-widest text-slate-400">
-                        Signal: <span className={monitorMode === 'wet' ? 'text-sky-400' : 'text-amber-400'}>{monitorMode === 'wet' ? 'REVIVED' : 'DRY'}</span>
-                     </span>
-                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          <div className="h-48 lg:h-56 rack-panel rounded-xl flex flex-col shadow-2xl overflow-hidden border-t-2 border-slate-800">
+          <div className="h-64 rack-panel rounded-xl flex flex-col shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between p-4 bg-slate-900/50 border-b border-slate-800">
               <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 flex items-center">
-                <BoltIcon className="w-3.5 h-3.5 mr-2 text-amber-500" />
+                <BoltIcon className="w-4 h-4 mr-2 text-amber-500" />
                 Signal Recalibration Queue
               </h4>
             </div>
             <div className="flex-1 flex overflow-hidden">
-              <div className="flex-1 border-r border-slate-800/50 p-4 overflow-y-auto bg-slate-950/20">
+              <div className="flex-1 border-r border-slate-800/50 p-4 overflow-y-auto">
                 <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="before" monitorMode={monitorMode} />
               </div>
-              <div className="flex-1 p-4 overflow-y-auto bg-slate-900/20">
+              <div className="flex-1 p-4 overflow-y-auto bg-slate-900/10">
                 <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="after" monitorMode={monitorMode} />
               </div>
             </div>
@@ -365,15 +293,23 @@ const App: React.FC = () => {
         </div>
 
         <aside className="w-full lg:w-[420px] shrink-0 flex flex-col space-y-6 overflow-y-auto pr-2 pb-6">
-          <div className="rack-panel rounded-xl p-5 flex flex-col space-y-4 shadow-xl border-t-2 border-slate-800">
+          <div className="rack-panel rounded-xl p-5 flex flex-col space-y-4 shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center text-slate-500">
                 <BookmarkSquareIcon className="w-4 h-4 mr-2" />
                 <h4 className="text-[10px] font-black uppercase tracking-[0.2em]">Preset Library</h4>
               </div>
-              <button onClick={savePreset} className="text-[9px] font-black text-amber-600 hover:text-amber-500 uppercase tracking-widest bg-slate-900 px-2 py-1 rounded border border-slate-800 shadow-sm">
-                Save Current
-              </button>
+              <div className="flex space-x-2">
+                <button 
+                  onClick={toggleDiff}
+                  className={`px-3 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-all border ${comparisonBase ? 'bg-amber-600 text-white border-amber-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}
+                >
+                  <ArrowsRightLeftIcon className="w-3 h-3" />
+                </button>
+                <button onClick={savePreset} className="text-[9px] font-black text-amber-600 hover:text-amber-500 uppercase tracking-widest bg-slate-900 px-3 py-1 rounded border border-slate-800 shadow-sm">
+                  SAVE NEW
+                </button>
+              </div>
             </div>
             <div className="flex flex-wrap gap-2">
               {presets.map(p => (
@@ -383,14 +319,12 @@ const App: React.FC = () => {
                   onClick={() => {
                     setSettings({ ...p.settings, isAiMode: false });
                     setMonitorMode('wet');
-                    setIsManualApplied(true);
                   }}
-                  className={`px-3 py-1.5 rounded-sm text-[9px] font-black uppercase tracking-widest transition-all border flex items-center ${
+                  className={`px-3 py-1.5 rounded-sm text-[9px] font-black uppercase tracking-widest transition-all border ${
                     activePresetId === p.id 
-                    ? 'bg-amber-600 text-white border-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.3)]' : 'bg-slate-900 text-slate-500 hover:bg-slate-800 border-slate-800'
+                    ? 'bg-amber-600 text-white border-amber-400 shadow-md' : 'bg-slate-900 text-slate-500 hover:bg-slate-800 border-slate-800'
                   }`}
                 >
-                  {activePresetId === p.id && <CheckIcon className="w-3 h-3 mr-1.5" />}
                   {p.name}
                 </button>
               ))}
@@ -408,9 +342,9 @@ const App: React.FC = () => {
             <button 
               onClick={handleExport}
               disabled={!activeTrack || exporting}
-              className={`w-full py-5 rounded-md flex items-center justify-center font-black uppercase tracking-[0.3em] text-[11px] transition-all shadow-xl active:scale-[0.98] ${!activeTrack ? 'bg-slate-800 text-slate-600 cursor-not-allowed border-slate-700' : 'bg-amber-600 text-white hover:bg-amber-500 border-amber-500'} ${exporting ? 'opacity-50' : ''} border-2`}
+              className={`w-full py-5 rounded-md flex items-center justify-center font-black uppercase tracking-[0.3em] text-[11px] transition-all shadow-xl active:scale-[0.98] ${!activeTrack ? 'bg-slate-800 text-slate-600 cursor-not-allowed border-slate-700' : 'bg-amber-600 text-white hover:bg-amber-500 border-amber-500 shadow-2xl'} ${exporting ? 'opacity-50' : ''} border-2`}
             >
-              {exporting ? <><ArrowPathIcon className="w-5 h-5 mr-3 animate-spin" />RENDERING...</> : <><ArrowDownTrayIcon className="w-5 h-5 mr-3" />EXPORT LOSSLESS MASTER</>}
+              {exporting ? <><ArrowPathIcon className="w-5 h-5 mr-3 animate-spin" />RENDERING MASTER...</> : <><ArrowDownTrayIcon className="w-5 h-5 mr-3" />EXPORT HI-RES MASTER</>}
             </button>
           </div>
         </aside>

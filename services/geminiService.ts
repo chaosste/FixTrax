@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { AudioSettings } from "../types";
 
@@ -6,11 +7,15 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
   
   const prompt = `
     Analyze this vinyl-derived audio track metadata: "${trackName}".
-    Provide optimal restoration parameters to:
-    1. Minimize hiss and crackle without muffling.
-    2. Recover transients for a modern sound.
-    3. Revive high-frequency clarity and sub-bass energy if appropriate.
-    4. Detect likely noise profile based on title/artist hints (e.g., live vs studio).
+    Your goal is to provide parameters that make it sound like a modern commercial MP3 (e.g., Serge Santiago - Love is a Feeling style).
+    
+    Rules for parameters:
+    1. Minimize hiss and crackle transparently.
+    2. Revive transients and clarity in the high-end.
+    3. Ensure balanced sub-bass without mud.
+    4. Provide a De-Reverb value if the track likely has room resonance.
+    5. Suggest a Stereo Width expansion (100-150) for a wider, modern stage.
+    6. Keep warmth conservative (under 30) to avoid digital distortion.
   `;
 
   try {
@@ -19,7 +24,6 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
       contents: prompt,
       config: {
         responseMimeType: "application/json",
-        // Fix: Use responseSchema to ensure predictable JSON structure
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -31,18 +35,19 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
             midGain: { type: Type.NUMBER, description: "Midrange gain (-2 to 2 dB)" },
             airGain: { type: Type.NUMBER, description: "High frequency air gain (0 to 12 dB)" },
             warmth: { type: Type.NUMBER, description: "Saturation warmth amount (0 to 45)" },
-            aiInsight: { type: Type.STRING, description: "A technical observation about the track profile" }
+            deReverb: { type: Type.NUMBER, description: "Room reverb suppression (0 to 60)" },
+            stereoWidth: { type: Type.NUMBER, description: "Stereo expansion factor (50 to 180)" },
+            aiInsight: { type: Type.STRING, description: "A technical observation about why these settings match a modern master" }
           },
           required: [
             "hissSuppression", "crackleSuppression", "clickSensitivity", 
             "transientRecovery", "bassBoost", "midGain", "airGain", 
-            "warmth", "aiInsight"
+            "warmth", "deReverb", "stereoWidth", "aiInsight"
           ]
         }
       }
     });
 
-    // Fix: access response.text directly as a property
     const text = response.text;
     if (!text) throw new Error("Empty response from AI");
     return JSON.parse(text.trim());
@@ -52,9 +57,12 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
       hissSuppression: 20,
       crackleSuppression: 15,
       transientRecovery: 30,
-      bassBoost: 2,
+      bassBoost: 3,
       airGain: 4,
-      aiInsight: "Standard vinyl restoration profile applied."
+      deReverb: 0,
+      stereoWidth: 110,
+      warmth: 15,
+      aiInsight: "Applied a clean modern-conversion profile as fallback."
     };
   }
 };
