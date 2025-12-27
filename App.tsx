@@ -14,10 +14,11 @@ import {
   ArrowDownTrayIcon,
   CpuChipIcon,
   BookmarkSquareIcon,
-  InformationCircleIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  BoltIcon
+  BoltIcon,
+  MusicalNoteIcon,
+  SpeakerWaveIcon
 } from '@heroicons/react/24/solid';
 
 const DEFAULT_SETTINGS: AudioSettings = {
@@ -57,6 +58,7 @@ const App: React.FC = () => {
   const [exportFormat, setExportFormat] = useState<ExportFormat>(ExportFormat.WAV);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [showAiPanel, setShowAiPanel] = useState(true);
+  const [monitorMode, setMonitorMode] = useState<'dry' | 'wet'>('wet');
   
   const engineRef = useRef<AudioEngine | null>(null);
   const activeTrack = tracks.find(t => t.id === activeTrackId);
@@ -70,8 +72,11 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (engineRef.current) engineRef.current.updateSettings(settings);
-  }, [settings]);
+    if (engineRef.current) {
+      engineRef.current.updateSettings(settings);
+      engineRef.current.setMonitorMode(monitorMode);
+    }
+  }, [settings, monitorMode]);
 
   const handleUpload = async (files: FileList | null) => {
     if (!files) return;
@@ -161,7 +166,7 @@ const App: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `VinylRevive_${activeTrack.name.split('.')[0]}.${exportFormat.toLowerCase()}`;
+      a.download = `VinylRevive_${activeTrack.name.split('.')[0]}.wav`;
       a.click();
     } catch (err) {
       console.error(err);
@@ -184,9 +189,9 @@ const App: React.FC = () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `VinylRevive_BATCH_${track.name.split('.')[0]}.${exportFormat.toLowerCase()}`;
+        a.download = `VinylRevive_BATCH_${track.name.split('.')[0]}.wav`;
         a.click();
-        await new Promise(r => setTimeout(r, 800)); // Rate limit downloads for browser
+        await new Promise(r => setTimeout(r, 800));
       }
     } finally {
       setBatchExporting(false);
@@ -207,7 +212,7 @@ const App: React.FC = () => {
             <span>Revive Mode:</span>
             <button 
               onClick={() => setSettings(prev => ({ ...prev, autoReviveMode: !prev.autoReviveMode }))}
-              className={`px-2 py-0.5 rounded ${settings.autoReviveMode ? 'bg-sky-600 text-white' : 'bg-slate-700 text-slate-400'}`}
+              className={`px-2 py-0.5 rounded transition-all ${settings.autoReviveMode ? 'bg-sky-600 text-white' : 'bg-slate-700 text-slate-400'}`}
             >
               {settings.autoReviveMode ? 'AUTO' : 'MANUAL'}
             </button>
@@ -241,11 +246,30 @@ const App: React.FC = () => {
                 <div className="flex justify-between items-start mb-6">
                   <div className="flex-1">
                     <span className="text-[9px] uppercase font-black text-amber-500 tracking-[0.3em] block mb-1">Source Analysis In-Progress</span>
-                    <h2 className="text-3xl font-black text-white truncate max-w-2xl tracking-tighter italic">{activeTrack.name}</h2>
+                    <h2 className="text-3xl font-black text-white truncate max-w-xl tracking-tighter italic leading-tight">{activeTrack.name}</h2>
                     
-                    {/* Persistent AI Insight Panel */}
+                    {/* Monitor Mode Switcher - A/B Comparison */}
+                    <div className="mt-4 flex items-center space-x-2">
+                       <div className="flex p-1 bg-slate-900 border border-slate-800 rounded-lg shadow-inner">
+                         <button 
+                            onClick={() => setMonitorMode('dry')}
+                            className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'dry' ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                         >
+                           <MusicalNoteIcon className="w-3 h-3 mr-2" />
+                           Dry Signal (Input)
+                         </button>
+                         <button 
+                            onClick={() => setMonitorMode('wet')}
+                            className={`flex items-center px-4 py-2 rounded-md font-black text-[10px] uppercase tracking-widest transition-all ${monitorMode === 'wet' ? 'bg-sky-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                         >
+                           <SpeakerWaveIcon className="w-3 h-3 mr-2" />
+                           Mastered (Output)
+                         </button>
+                       </div>
+                    </div>
+
                     {settings.aiInsight && (
-                      <div className="mt-4 rack-panel rounded-lg border-l-4 border-l-sky-500 overflow-hidden max-w-xl">
+                      <div className="mt-4 rack-panel rounded-lg border-l-4 border-l-sky-500 overflow-hidden max-w-xl shadow-xl">
                         <button 
                           onClick={() => setShowAiPanel(!showAiPanel)}
                           className="w-full flex items-center justify-between p-3 bg-sky-950/20 hover:bg-sky-950/40 transition-colors"
@@ -259,10 +283,6 @@ const App: React.FC = () => {
                         {showAiPanel && (
                           <div className="p-4 bg-slate-900/50 text-xs text-sky-100 leading-relaxed font-medium">
                             {settings.aiInsight}
-                            <div className="mt-3 flex space-x-2">
-                               <span className="bg-sky-900/50 text-sky-400 text-[9px] px-2 py-0.5 rounded border border-sky-400/20 font-black">SPECTRAL SYNCED</span>
-                               <span className="bg-sky-900/50 text-sky-400 text-[9px] px-2 py-0.5 rounded border border-sky-400/20 font-black">PHASE CORRECTED</span>
-                            </div>
                           </div>
                         )}
                       </div>
@@ -315,18 +335,18 @@ const App: React.FC = () => {
             </div>
             <div className="flex-1 flex overflow-hidden">
               <div className="flex-1 border-r border-slate-800/50 p-5 overflow-y-auto">
-                <span className="text-[8px] uppercase font-black text-slate-600 tracking-widest block mb-3">01 INPUT (DRY)</span>
-                <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="before" />
+                <span className="text-[8px] uppercase font-black text-slate-600 tracking-widest block mb-3">INPUT SIGNAL ANALYSIS</span>
+                <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="before" monitorMode={monitorMode} />
               </div>
               <div className="flex-1 p-5 overflow-y-auto bg-slate-900/20">
-                <span className="text-[8px] uppercase font-black text-sky-600 tracking-widest block mb-3">02 OUTPUT (MASTERED)</span>
-                <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="after" />
+                <span className="text-[8px] uppercase font-black text-sky-600 tracking-widest block mb-3">MASTERED RENDER MONITOR</span>
+                <TrackList tracks={tracks} activeId={activeTrackId} onSelect={handleSelectTrack} onRemove={(id) => setTracks(prev => prev.filter(t => t.id !== id))} type="after" monitorMode={monitorMode} />
               </div>
             </div>
           </div>
         </div>
 
-        <aside className="w-full lg:w-[420px] shrink-0 flex flex-col space-y-6 overflow-y-auto">
+        <aside className="w-full lg:w-[420px] shrink-0 flex flex-col space-y-6 overflow-y-auto pr-2">
           <div className="rack-panel rounded-xl p-5 flex flex-col space-y-4 shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Preset Library</h4>
@@ -360,11 +380,9 @@ const App: React.FC = () => {
 
           <div className="rack-panel rounded-xl p-8 shadow-2xl">
             <div className="flex items-center justify-between mb-8 border-b border-slate-800 pb-4">
-              <h4 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Master Render Engine</h4>
+              <h4 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Master Output Format</h4>
               <div className="flex bg-slate-900 p-1.5 rounded-sm border border-slate-800">
-                {['WAV', 'MP3'].map(f => (
-                  <button key={f} onClick={() => setExportFormat(f as ExportFormat)} className={`px-4 py-1 rounded-sm text-[10px] font-black transition-all tracking-widest ${exportFormat === f ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-600 hover:text-slate-400'}`}>{f}</button>
-                ))}
+                 <button className="px-4 py-1 rounded-sm text-[10px] font-black transition-all tracking-widest bg-amber-600 text-white shadow-lg">WAV (Lossless)</button>
               </div>
             </div>
             <button 
@@ -372,9 +390,9 @@ const App: React.FC = () => {
               disabled={!activeTrack || exporting}
               className={`w-full py-5 rounded-md flex items-center justify-center font-black uppercase tracking-[0.3em] text-[11px] transition-all shadow-[0_15px_30px_-10px_rgba(245,158,11,0.3)] hover:shadow-amber-500/40 active:scale-[0.98] ${!activeTrack ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-amber-600 text-white hover:bg-amber-500'} ${exporting ? 'opacity-50' : ''}`}
             >
-              {exporting ? <><ArrowPathIcon className="w-5 h-5 mr-3 animate-spin" />Rendering Master...</> : <><ArrowDownTrayIcon className="w-5 h-5 mr-3" />Export Master Profile</>}
+              {exporting ? <><ArrowPathIcon className="w-5 h-5 mr-3 animate-spin" />Rendering Master...</> : <><ArrowDownTrayIcon className="w-5 h-5 mr-3" />Export Lossless Master</>}
             </button>
-            <p className="text-[8px] text-center text-slate-700 uppercase font-black tracking-widest mt-4">Safe Gain Corrected | High Bitrate 32-bit Internal Float</p>
+            <p className="text-[8px] text-center text-slate-700 uppercase font-black tracking-widest mt-4">Headroom Optimized | High Bitrate 16-bit PCM</p>
           </div>
         </aside>
       </main>

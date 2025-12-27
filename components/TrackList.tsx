@@ -9,9 +9,10 @@ interface TrackListProps {
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   type: 'before' | 'after';
+  monitorMode: 'dry' | 'wet';
 }
 
-const TrackList: React.FC<TrackListProps> = ({ tracks, activeId, onSelect, onRemove, type }) => {
+const TrackList: React.FC<TrackListProps> = ({ tracks, activeId, onSelect, onRemove, type, monitorMode }) => {
   if (tracks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full opacity-20 py-8">
@@ -25,6 +26,7 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, activeId, onSelect, onRem
     <div className="space-y-1">
       {tracks.map(track => {
         const isActive = track.id === activeId;
+        const isMonitoringThisSide = isActive && ((type === 'before' && monitorMode === 'dry') || (type === 'after' && monitorMode === 'wet'));
         const isDone = track.status === 'idle' || track.status === 'done';
         
         return (
@@ -33,27 +35,29 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, activeId, onSelect, onRem
             onClick={() => onSelect(track.id)}
             className={`group flex items-center justify-between p-2 rounded cursor-pointer transition-all border ${
               isActive 
-                ? 'bg-slate-800 border-amber-500/50 shadow-inner' 
-                : 'border-transparent hover:bg-slate-800/50 hover:border-slate-700'
-            }`}
+                ? 'bg-slate-800 border-slate-700 shadow-inner' 
+                : 'border-transparent hover:bg-slate-800/50'
+            } ${isMonitoringThisSide ? 'border-amber-500/40 ring-1 ring-amber-500/20' : ''}`}
           >
             <div className="flex items-center space-x-3 overflow-hidden">
-              <div className={`w-1 h-8 rounded-full ${
-                isActive ? (type === 'after' ? 'bg-sky-500' : 'bg-amber-500') : 'bg-slate-700'
+              <div className={`w-1 h-8 rounded-full transition-all ${
+                isMonitoringThisSide 
+                  ? (type === 'after' ? 'bg-sky-500 animate-pulse shadow-[0_0_8px_#0ea5e9]' : 'bg-amber-500 animate-pulse shadow-[0_0_8px_#f59e0b]') 
+                  : 'bg-slate-700'
               }`}></div>
               <div className="overflow-hidden">
                 <p className={`text-xs font-bold truncate ${isActive ? 'text-white' : 'text-slate-400'}`}>
                   {track.name}
                 </p>
                 <div className="flex items-center space-x-2">
-                  <span className="text-[9px] uppercase font-black text-slate-500">
-                    {type === 'before' ? 'Original' : 'Revived'}
+                  <span className={`text-[9px] uppercase font-black tracking-tighter ${isMonitoringThisSide ? (type === 'after' ? 'text-sky-400' : 'text-amber-400') : 'text-slate-500'}`}>
+                    {type === 'before' ? 'Dry Input' : 'Revived Out'}
                   </span>
                   {track.status === 'analyzing' && (
                     <span className="text-[8px] uppercase font-bold text-sky-400 animate-pulse">Scanning...</span>
                   )}
-                  {isActive && type === 'after' && track.aiProfile && (
-                    <span className="text-[8px] bg-sky-900 text-sky-300 px-1 rounded flex items-center">
+                  {type === 'after' && track.aiProfile && (
+                    <span className="text-[7px] bg-sky-900/50 text-sky-400 px-1 rounded flex items-center border border-sky-400/20">
                       <BeakerIcon className="w-2 h-2 mr-1" /> AI Applied
                     </span>
                   )}
@@ -64,14 +68,14 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, activeId, onSelect, onRem
             <div className="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
               <button 
                 onClick={(e) => { e.stopPropagation(); onRemove(track.id); }}
-                className="p-1 hover:text-red-500 text-slate-500"
+                className="p-1 hover:text-red-500 text-slate-500 transition-colors"
               >
-                <TrashIcon className="w-4 h-4" />
+                <TrashIcon className="w-3.5 h-3.5" />
               </button>
             </div>
             
             {isActive && isDone && (
-              <CheckCircleIcon className={`w-4 h-4 ml-2 ${type === 'after' ? 'text-sky-500' : 'text-amber-500'}`} />
+              <CheckCircleIcon className={`w-4 h-4 ml-2 ${isMonitoringThisSide ? (type === 'after' ? 'text-sky-500' : 'text-amber-500') : 'text-slate-700'}`} />
             )}
           </div>
         );

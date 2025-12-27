@@ -5,20 +5,24 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private source: AudioBufferSourceNode | null = null;
   private nodes: {
-    gainStaging: GainNode;
+    input: GainNode;
+    dryGain: GainNode;
+    wetGain: GainNode;
     hissFilter: BiquadFilterNode;
     crackleFilter: BiquadFilterNode;
     humNotch: BiquadFilterNode;
     bassFilter: BiquadFilterNode;
     midFilter: BiquadFilterNode;
     airFilter: BiquadFilterNode;
-    spectralExciter: BiquadFilterNode; // New: Part of generative synth logic
+    spectralExciter: BiquadFilterNode;
     saturator: WaveShaperNode;
     dynamics: DynamicsCompressorNode;
     limiter: DynamicsCompressorNode;
     masterGain: GainNode;
     analyzer: AnalyserNode;
   } | null = null;
+
+  private monitorMode: 'dry' | 'wet' = 'wet';
 
   constructor() {
     this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -29,13 +33,17 @@ export class AudioEngine {
     if (!this.ctx) return;
     const ctx = this.ctx;
 
-    const gainStaging = ctx.createGain();
-    gainStaging.gain.value = 0.707;
+    const input = ctx.createGain();
+    const dryGain = ctx.createGain();
+    const wetGain = ctx.createGain();
+    
+    // Initial monitoring state
+    dryGain.gain.value = 0;
+    wetGain.gain.value = 1;
 
     const hissFilter = ctx.createBiquadFilter();
     hissFilter.type = 'highshelf';
-    hissFilter.frequency.value = 8000;
-
+    
     const crackleFilter = ctx.createBiquadFilter();
     crackleFilter.type = 'peaking';
 
@@ -44,20 +52,16 @@ export class AudioEngine {
 
     const bassFilter = ctx.createBiquadFilter();
     bassFilter.type = 'lowshelf';
-    bassFilter.frequency.value = 150;
 
     const midFilter = ctx.createBiquadFilter();
     midFilter.type = 'peaking';
-    midFilter.frequency.value = 1200;
 
     const airFilter = ctx.createBiquadFilter();
     airFilter.type = 'highshelf';
-    airFilter.frequency.value = 12000;
 
     const spectralExciter = ctx.createBiquadFilter();
     spectralExciter.type = 'peaking';
     spectralExciter.frequency.value = 15000;
-    spectralExciter.Q.value = 1.0;
     spectralExciter.gain.value = 0;
 
     const saturator = ctx.createWaveShaper();
@@ -66,14 +70,17 @@ export class AudioEngine {
     const dynamics = ctx.createDynamicsCompressor();
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -0.5;
-    limiter.ratio.value = 20;
 
     const masterGain = ctx.createGain();
     const analyzer = ctx.createAnalyser();
-    analyzer.fftSize = 2048;
 
-    // Chain: Gain -> Hiss -> Crackle -> Hum -> Bass -> Mid -> Air -> Exciter -> Sat -> Comp -> Lim -> Master
-    gainStaging.connect(hissFilter);
+    // DUAL PATH ARCHITECTURE
+    // Dry Path
+    input.connect(dryGain);
+    dryGain.connect(masterGain);
+
+    // Wet Path (Restoration Chain)
+    input.connect(hissFilter);
     hissFilter.connect(crackleFilter);
     crackleFilter.connect(humNotch);
     humNotch.connect(bassFilter);
@@ -82,14 +89,16 @@ export class AudioEngine {
     airFilter.connect(spectralExciter);
     spectralExciter.connect(saturator);
     saturator.connect(dynamics);
-    dynamics.connect(limiter);
+    dynamics.connect(wetGain);
+    wetGain.connect(limiter);
     limiter.connect(masterGain);
+
     masterGain.connect(analyzer);
     analyzer.connect(ctx.destination);
 
     this.nodes = {
-      gainStaging, hissFilter, crackleFilter, humNotch, bassFilter, midFilter, 
-      airFilter, spectralExciter, saturator, dynamics, limiter, masterGain, analyzer
+      input, dryGain, wetGain, hissFilter, crackleFilter, humNotch, bassFilter, 
+      midFilter, airFilter, spectralExciter, saturator, dynamics, limiter, masterGain, analyzer
     };
   }
 
@@ -105,6 +114,20 @@ export class AudioEngine {
     return curve;
   }
 
+  public setMonitorMode(mode: 'dry' | 'wet') {
+    if (!this.nodes || !this.ctx) return;
+    this.monitorMode = mode;
+    const now = this.ctx.currentTime;
+    // Crossfade for smooth comparison
+    if (mode === 'dry') {
+      this.nodes.dryGain.gain.setTargetAtTime(1, now, 0.02);
+      this.nodes.wetGain.gain.setTargetAtTime(0, now, 0.02);
+    } else {
+      this.nodes.dryGain.gain.setTargetAtTime(0, now, 0.02);
+      this.nodes.wetGain.gain.setTargetAtTime(1, now, 0.02);
+    }
+  }
+
   public async loadAudio(blob: Blob): Promise<AudioBuffer> {
     const arrayBuffer = await blob.arrayBuffer();
     return await this.ctx!.decodeAudioData(arrayBuffer);
@@ -115,7 +138,7 @@ export class AudioEngine {
     this.stop();
     this.source = this.ctx.createBufferSource();
     this.source.buffer = buffer;
-    this.source.connect(this.nodes.gainStaging);
+    this.source.connect(this.nodes.input);
     this.source.start(0, startTime);
   }
 
@@ -129,37 +152,16 @@ export class AudioEngine {
   public updateSettings(settings: AudioSettings) {
     if (!this.nodes) return;
     const n = this.nodes;
-
-    n.hissFilter.gain.value = -settings.hissSuppression * 0.18; 
-    n.hissFilter.Q.value = 0.5 + (settings.hissSuppression / 100);
-
-    // Crackle Filter Logic: Intensity increases Q and Depth
-    // Sensitivity targets specific frequency bands (higher = more treble focus)
-    n.crackleFilter.frequency.value = 2000 + (settings.clickSensitivity * 50);
-    n.crackleFilter.Q.value = 1.0 + (settings.clickIntensity * 0.15);
-    n.crackleFilter.gain.value = - (settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
-    
-    // Hum Notch
-    n.humNotch.frequency.value = settings.humRemoval ? settings.humFrequency : 0.1;
-    n.humNotch.Q.value = settings.humQ;
-    
-    // Tone
-    n.bassFilter.gain.value = settings.bassBoost;
-    n.midFilter.gain.value = settings.midGain;
-    n.airFilter.gain.value = settings.airGain;
-
-    // Spectral Synth (Generative Simulation)
-    n.spectralExciter.gain.value = settings.spectralSynth * 0.15;
-    
-    // Saturation
+    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.18, this.ctx!.currentTime, 0.01);
+    n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), this.ctx!.currentTime, 0.01);
+    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3), this.ctx!.currentTime, 0.01);
+    n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.1, this.ctx!.currentTime, 0.01);
+    n.bassFilter.gain.setTargetAtTime(settings.bassBoost, this.ctx!.currentTime, 0.01);
+    n.midFilter.gain.setTargetAtTime(settings.midGain, this.ctx!.currentTime, 0.01);
+    n.airFilter.gain.setTargetAtTime(settings.airGain, this.ctx!.currentTime, 0.01);
+    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.15, this.ctx!.currentTime, 0.01);
     n.saturator.curve = this.makeWarmthCurve(settings.warmth);
-    
-    // Dynamics
-    n.dynamics.threshold.value = -12 - (settings.transientRecovery * 0.15);
-    n.dynamics.ratio.value = 2 + (settings.transientRecovery * 0.04);
-    
-    // Master
-    n.masterGain.gain.value = Math.pow(10, settings.masterGain / 20);
+    n.masterGain.gain.setTargetAtTime(Math.pow(10, settings.masterGain / 20), this.ctx!.currentTime, 0.01);
   }
 
   public getAnalyzer() { return this.nodes?.analyzer; }
@@ -173,10 +175,7 @@ export class AudioEngine {
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    // Automatic Gain Staging (Headroom Analysis)
-    const peakAnalysisNode = offlineCtx.createGain();
-    peakAnalysisNode.gain.value = 0.8; // Safe starting point (-2dB)
-
+    // Replication of the Wet Signal Path
     const hiss = offlineCtx.createBiquadFilter();
     hiss.type = 'highshelf';
     hiss.frequency.value = 8000;
@@ -185,8 +184,7 @@ export class AudioEngine {
     const crackle = offlineCtx.createBiquadFilter();
     crackle.type = 'peaking';
     crackle.frequency.value = 2000 + (settings.clickSensitivity * 50);
-    crackle.Q.value = 1.0 + (settings.clickIntensity * 0.15);
-    crackle.gain.value = - (settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
+    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
 
     const hum = offlineCtx.createBiquadFilter();
     hum.type = 'notch';
@@ -205,6 +203,10 @@ export class AudioEngine {
     air.type = 'highshelf'; air.frequency.value = 12000;
     air.gain.value = settings.airGain;
 
+    const spectral = offlineCtx.createBiquadFilter();
+    spectral.type = 'peaking'; spectral.frequency.value = 15000;
+    spectral.gain.value = settings.spectralSynth * 0.15;
+
     const sat = offlineCtx.createWaveShaper();
     sat.curve = this.makeWarmthCurve(settings.warmth);
 
@@ -217,14 +219,14 @@ export class AudioEngine {
     const master = offlineCtx.createGain();
     master.gain.value = Math.pow(10, settings.masterGain / 20);
 
-    source.connect(peakAnalysisNode);
-    peakAnalysisNode.connect(hiss);
+    source.connect(hiss);
     hiss.connect(crackle);
     crackle.connect(hum);
     hum.connect(bass);
     bass.connect(mid);
     mid.connect(air);
-    air.connect(sat);
+    air.connect(spectral);
+    spectral.connect(sat);
     sat.connect(comp);
     comp.connect(lim);
     lim.connect(master);
@@ -232,8 +234,8 @@ export class AudioEngine {
 
     source.start(0);
     const renderedBuffer = await offlineCtx.startRendering();
-
-    // Headroom Correction
+    
+    // Safety Gain Staging
     let maxVal = 0;
     for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
       const data = renderedBuffer.getChannelData(c);
@@ -242,65 +244,59 @@ export class AudioEngine {
         if (abs > maxVal) maxVal = abs;
       }
     }
-
-    if (maxVal > 0.95) {
-      const factor = 0.95 / maxVal;
+    if (maxVal > 0.98) {
+      const factor = 0.98 / maxVal;
       for (let c = 0; c < renderedBuffer.numberOfChannels; c++) {
         const data = renderedBuffer.getChannelData(c);
-        for (let i = 0; i < data.length; i++) {
-          data[i] *= factor;
-        }
+        for (let i = 0; i < data.length; i++) data[i] *= factor;
       }
     }
-    
+
     return this.bufferToWav(renderedBuffer);
   }
 
   private bufferToWav(buffer: AudioBuffer): Blob {
-    const numOfChan = buffer.numberOfChannels;
-    const length = buffer.length * numOfChan * 2 + 44;
-    const bufferArr = new ArrayBuffer(length);
-    const view = new DataView(bufferArr);
-    const channels = [];
-    let i, sample;
-    let offset = 0;
-    let pos = 0;
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+    const bytesPerSample = bitDepth / 8;
+    const blockAlign = numChannels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = buffer.length * blockAlign;
+    const fileSize = 44 + dataSize;
+    const arrayBuffer = new ArrayBuffer(fileSize);
+    const view = new DataView(arrayBuffer);
 
-    let p = 0;
-    function writeString(s: string) {
-      for (let i = 0; i < s.length; i++) {
-        view.setUint8(p + i, s.charCodeAt(i));
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
       }
-      p += s.length;
-    }
+    };
 
-    writeString('RIFF');
-    view.setUint32(4, 36 + buffer.length * numOfChan * 2, true);
-    writeString('WAVE');
-    writeString('fmt ');
+    writeString(0, 'RIFF');
+    view.setUint32(4, fileSize - 8, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numOfChan, true);
-    view.setUint32(24, buffer.sampleRate, true);
-    view.setUint32(28, buffer.sampleRate * 2 * numOfChan, true);
-    view.setUint16(32, numOfChan * 2, true);
-    view.setUint16(34, 16, true);
-    writeString('data');
-    view.setUint32(40, buffer.length * numOfChan * 2, true);
-    p = 44;
+    view.setUint16(20, format, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
 
-    for (i = 0; i < buffer.numberOfChannels; i++)
-        channels.push(buffer.getChannelData(i));
-
-    while (p < length) {
-        for (i = 0; i < numOfChan; i++) {
-            sample = Math.max(-1, Math.min(1, channels[i][offset]));
-            sample = (sample < 0 ? sample * 0x8000 : sample * 0x7FFF);
-            view.setInt16(p, sample, true);
-            p += 2;
-        }
-        offset++;
+    const offset = 44;
+    for (let i = 0; i < buffer.length; i++) {
+      for (let channel = 0; channel < numChannels; channel++) {
+        const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+        const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset + (i * blockAlign) + (channel * bytesPerSample), intSample, true);
+      }
     }
-    return new Blob([bufferArr], { type: 'audio/wav' });
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
   }
 }
