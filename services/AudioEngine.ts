@@ -48,9 +48,11 @@ export class AudioEngine {
     dryGain.gain.value = 0;
     wetGain.gain.value = 1;
 
+    // REFINED: Changed from 'highshelf' to 'peaking' for adaptive band-specific hiss removal
     const hissFilter = ctx.createBiquadFilter();
-    hissFilter.type = 'highshelf';
-    hissFilter.frequency.value = 8000;
+    hissFilter.type = 'peaking';
+    hissFilter.frequency.value = 11500; // Centered in the 8kHz-15kHz noise band
+    hissFilter.Q.value = 1.6; // Width to cover the target range
     
     const crackleFilter = ctx.createBiquadFilter();
     crackleFilter.type = 'peaking';
@@ -194,7 +196,16 @@ export class AudioEngine {
     const n = this.nodes;
     const now = this.ctx.currentTime;
     
-    n.hissFilter.gain.setTargetAtTime(-settings.hissSuppression * 0.15, now, 0.02);
+    // REFINED: Adaptive Hiss Logic
+    // Shifts center frequency slightly and narrows Q as suppression increases for surgical removal
+    const adaptiveHissFreq = 11500 + (settings.hissSuppression * 10); 
+    const adaptiveHissQ = 1.4 + (settings.hissSuppression * 0.015);
+    const adaptiveHissGain = -settings.hissSuppression * 0.18;
+
+    n.hissFilter.frequency.setTargetAtTime(adaptiveHissFreq, now, 0.02);
+    n.hissFilter.Q.setTargetAtTime(adaptiveHissQ, now, 0.02);
+    n.hissFilter.gain.setTargetAtTime(adaptiveHissGain, now, 0.02);
+
     n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), now, 0.02);
     n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3), now, 0.02);
     
@@ -228,10 +239,16 @@ export class AudioEngine {
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    // Replication of the live path for bit-accurate export
+    // Adaptive Offline Path
+    const adaptiveHissFreq = 11500 + (settings.hissSuppression * 10);
+    const adaptiveHissQ = 1.4 + (settings.hissSuppression * 0.015);
+    const adaptiveHissGain = -settings.hissSuppression * 0.18;
+
     const hiss = offlineCtx.createBiquadFilter();
-    hiss.type = 'highshelf'; hiss.frequency.value = 8000;
-    hiss.gain.value = -settings.hissSuppression * 0.15;
+    hiss.type = 'peaking';
+    hiss.frequency.value = adaptiveHissFreq;
+    hiss.Q.value = adaptiveHissQ;
+    hiss.gain.value = adaptiveHissGain;
 
     const crackle = offlineCtx.createBiquadFilter();
     crackle.type = 'peaking';

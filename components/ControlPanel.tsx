@@ -50,12 +50,20 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ settings, setSettings, onRe
     const fmin = 20;
     const fmax = 20000;
 
+    // Math for visual curve reflecting the AudioEngine's new peaking hiss filter
+    const adaptiveHissFreq = 11500 + (settings.hissSuppression * 10);
+    const adaptiveHissQ = 1.4 + (settings.hissSuppression * 0.015);
+    const adaptiveHissGain = -settings.hissSuppression * 0.18;
+
     for (let x = 0; x < canvas.width; x++) {
       const freq = fmin * Math.pow(fmax / fmin, x / canvas.width);
       const bass = settings.bassBoost * (1 / (1 + Math.pow(freq / 150, 2)));
       const mid = settings.midGain * Math.exp(-Math.pow(Math.log(freq / 1200), 2));
       const air = settings.airGain * (1 - (1 / (1 + Math.pow(freq / 12000, 2))));
-      const hiss = (freq > 8000) ? (-settings.hissSuppression * 0.1) : 0;
+      
+      // REFINED: Visualize the peaking hiss filter curve
+      const hissWidth = adaptiveHissFreq / adaptiveHissQ;
+      const hiss = adaptiveHissGain * Math.exp(-Math.pow(Math.log(freq / adaptiveHissFreq), 2) / (0.5 / adaptiveHissQ));
       
       const totalGain = bass + mid + air + hiss;
       const y = (canvas.height / 2) - (totalGain * 2);
@@ -86,7 +94,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({ settings, setSettings, onRe
               label="Hiss Suppression" 
               value={settings.hissSuppression} 
               onChange={v => update('hissSuppression', v)} 
-              tooltip="Reduces continuous static and tape hiss. Recommended: 10-25% for preservation, 40% for heavy restoration."
+              tooltip="Reduces continuous static and tape hiss using adaptive band targeting (8-15kHz). Optimized for precision."
             />
             <Slider 
               label="Transient Recovery" 
