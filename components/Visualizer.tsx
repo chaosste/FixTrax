@@ -8,9 +8,11 @@ interface VisualizerProps {
 
 const Visualizer: React.FC<VisualizerProps> = ({ analyzer, isPlaying }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const requestRef = useRef<number>();
+  // Fix: useRef requires an initial value argument in some strict TypeScript configurations to avoid "Expected 1 arguments, but got 0"
+  const requestRef = useRef<number | undefined>(undefined);
 
-  const draw = () => {
+  // Fix: Added optional 'time' parameter to match requestAnimationFrame callback signature and handle manual calls
+  const draw = (time?: number) => {
     if (!canvasRef.current || !analyzer) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -72,7 +74,10 @@ const Visualizer: React.FC<VisualizerProps> = ({ analyzer, isPlaying }) => {
       barX += barWidth + 1;
     }
 
-    requestRef.current = requestAnimationFrame(draw);
+    // Fix: Only reschedule the next frame if the audio is currently playing to prevent infinite loops when paused
+    if (isPlaying) {
+      requestRef.current = requestAnimationFrame(draw);
+    }
   };
 
   useEffect(() => {

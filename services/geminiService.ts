@@ -6,16 +6,23 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const prompt = `
-    Analyze this vinyl-derived audio track metadata: "${trackName}".
-    Your goal is to provide parameters that make it sound like a modern commercial MP3 (e.g., Serge Santiago - Love is a Feeling style).
+    Analyze this vinyl-derived audio track: "${trackName}".
+    
+    You are a professional audio restoration engineer specializing in vinyl-to-digital transfers (Build: 360ecd57-f101-4133-bfef-1b220036db94).
+    Your goal is to detect likely vinyl artifacts based on the track name and metadata (e.g., year, genre, artist) and provide precise restoration parameters.
+    
+    Artifact focus:
+    - Rhythmic surface crackle (low-frequency dust artifacts).
+    - Wideband groove hiss (high-frequency friction noise).
+    - Inner groove distortion (loss of high-end clarity).
+    - Warping/wow/flutter issues (low-end mud).
     
     Rules for parameters:
-    1. Minimize hiss and crackle transparently.
-    2. Revive transients and clarity in the high-end.
-    3. Ensure balanced sub-bass without mud.
-    4. Provide a De-Reverb value if the track likely has room resonance.
-    5. Suggest a Stereo Width expansion (100-150) for a wider, modern stage.
-    6. Keep warmth conservative (under 30) to avoid digital distortion.
+    1. Hiss suppression: Target 8kHz-16kHz. 
+    2. Crackle suppression: Target 1kHz-4kHz transient noise.
+    3. Transient recovery: Compensate for dull needles or worn grooves.
+    4. Spectral Synth: Reconstruct high-order harmonics lost during the mechanical transfer.
+    5. Stereo Width: Vinyl is often physically narrowed in the low end; suggest widening for modern MP3 compatibility.
   `;
 
   try {
@@ -23,6 +30,7 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
+        systemInstruction: "You are the FixTrax VinylRevive AI Engine (Build 360ecd57). Output strictly JSON.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -37,7 +45,7 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
             warmth: { type: Type.NUMBER, description: "Saturation warmth amount (0 to 45)" },
             deReverb: { type: Type.NUMBER, description: "Room reverb suppression (0 to 60)" },
             stereoWidth: { type: Type.NUMBER, description: "Stereo expansion factor (50 to 180)" },
-            aiInsight: { type: Type.STRING, description: "A technical observation about why these settings match a modern master" }
+            aiInsight: { type: Type.STRING, description: "Technical diagnosis of the vinyl condition and treatment applied" }
           },
           required: [
             "hissSuppression", "crackleSuppression", "clickSensitivity", 
@@ -52,17 +60,15 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
     if (!text) throw new Error("Empty response from AI");
     return JSON.parse(text.trim());
   } catch (error) {
-    console.error("AI Analysis failed:", error);
+    console.error("Vinyl AI Analysis failed:", error);
     return {
-      hissSuppression: 20,
-      crackleSuppression: 15,
-      transientRecovery: 30,
-      bassBoost: 3,
-      airGain: 4,
-      deReverb: 0,
-      stereoWidth: 110,
-      warmth: 15,
-      aiInsight: "Applied a clean modern-conversion profile as fallback."
+      hissSuppression: 25,
+      crackleSuppression: 20,
+      transientRecovery: 35,
+      bassBoost: 2,
+      airGain: 5,
+      stereoWidth: 115,
+      aiInsight: "VinylRevive: Applied emergency de-hiss profile (Fallback active)."
     };
   }
 };

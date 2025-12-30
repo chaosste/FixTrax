@@ -17,8 +17,8 @@ export class AudioEngine {
     spectralExciter: BiquadFilterNode;
     saturator: WaveShaperNode;
     deReverbGate: DynamicsCompressorNode;
+    noiseExpander: DynamicsCompressorNode; // NEW: Downward expander for noise floor
     dynamics: DynamicsCompressorNode;
-    // Stereo Width Processor
     splitter: ChannelSplitterNode;
     midGainNode: GainNode;
     sideGainNode: GainNode;
@@ -40,7 +40,7 @@ export class AudioEngine {
     const ctx = this.ctx;
 
     const input = ctx.createGain();
-    input.gain.value = 0.7; // Pre-gain reduction to prevent internal clipping
+    input.gain.value = 0.7;
 
     const dryGain = ctx.createGain();
     const wetGain = ctx.createGain();
@@ -48,18 +48,19 @@ export class AudioEngine {
     dryGain.gain.value = 0;
     wetGain.gain.value = 1;
 
-    // REFINED: Changed from 'highshelf' to 'peaking' for adaptive band-specific hiss removal
     const hissFilter = ctx.createBiquadFilter();
     hissFilter.type = 'peaking';
-    hissFilter.frequency.value = 11500; // Centered in the 8kHz-15kHz noise band
-    hissFilter.Q.value = 1.6; // Width to cover the target range
+    hissFilter.frequency.value = 11500;
+    hissFilter.Q.value = 1.6;
     
     const crackleFilter = ctx.createBiquadFilter();
     crackleFilter.type = 'peaking';
+    crackleFilter.frequency.value = 3200;
+    crackleFilter.Q.value = 4.0; // Shaper Q for surface noise
 
     const humNotch = ctx.createBiquadFilter();
     humNotch.type = 'notch';
-    humNotch.Q.value = 10;
+    humNotch.Q.value = 15;
 
     const bassFilter = ctx.createBiquadFilter();
     bassFilter.type = 'lowshelf';
@@ -75,12 +76,18 @@ export class AudioEngine {
 
     const spectralExciter = ctx.createBiquadFilter();
     spectralExciter.type = 'peaking';
-    spectralExciter.frequency.value = 15000;
+    spectralExciter.frequency.value = 15500;
+    spectralExciter.Q.value = 0.8;
 
     const saturator = ctx.createWaveShaper();
     saturator.curve = this.makeWarmthCurve(0);
 
-    // De-Reverb (Sustain reduction via fast-release compression)
+    const noiseExpander = ctx.createDynamicsCompressor();
+    noiseExpander.threshold.value = -60;
+    noiseExpander.ratio.value = 1; // 1 is transparent, >1 acts as expander below threshold
+    noiseExpander.attack.value = 0.05;
+    noiseExpander.release.value = 0.2;
+
     const deReverbGate = ctx.createDynamicsCompressor();
     deReverbGate.threshold.value = -30;
     deReverbGate.ratio.value = 1; 
@@ -91,7 +98,6 @@ export class AudioEngine {
     dynamics.threshold.value = -18;
     dynamics.ratio.value = 2;
 
-    // Stereo Width M/S Processing simulation
     const splitter = ctx.createChannelSplitter(2);
     const midGainNode = ctx.createGain();
     const sideGainNode = ctx.createGain();
@@ -100,7 +106,6 @@ export class AudioEngine {
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -0.5;
     limiter.ratio.value = 20;
-    limiter.knee.value = 0;
 
     const masterGain = ctx.createGain();
     const analyzer = ctx.createAnalyser();
@@ -109,7 +114,8 @@ export class AudioEngine {
     input.connect(dryGain);
     dryGain.connect(masterGain);
 
-    input.connect(hissFilter);
+    input.connect(noiseExpander);
+    noiseExpander.connect(hissFilter);
     hissFilter.connect(crackleFilter);
     crackleFilter.connect(humNotch);
     humNotch.connect(bassFilter);
@@ -121,12 +127,10 @@ export class AudioEngine {
     deReverbGate.connect(dynamics);
     dynamics.connect(wetGain);
 
-    // Stereo Processing
     wetGain.connect(splitter);
     splitter.connect(midGainNode, 0); 
     splitter.connect(sideGainNode, 1); 
     
-    // M/S Routing (Simplified for Web Audio Stereo expansion)
     midGainNode.connect(merger, 0, 0);
     midGainNode.connect(merger, 0, 1);
     sideGainNode.connect(merger, 0, 0);
@@ -140,18 +144,17 @@ export class AudioEngine {
 
     this.nodes = {
       input, dryGain, wetGain, hissFilter, crackleFilter, humNotch, bassFilter, 
-      midFilter, airFilter, spectralExciter, saturator, deReverbGate, dynamics,
+      midFilter, airFilter, spectralExciter, saturator, noiseExpander, deReverbGate, dynamics,
       splitter, midGainNode, sideGainNode, merger, limiter, masterGain, analyzer
     };
   }
 
   private makeWarmthCurve(amount: number) {
-    const k = amount * 0.25; // Adjusted down to prevent distortion
+    const k = amount * 0.25;
     const n_samples = 44100;
     const curve = new Float32Array(n_samples);
     for (let i = 0; i < n_samples; ++i) {
       const x = (i * 2) / n_samples - 1;
-      // Soft sigmoid for warmth
       curve[i] = (Math.PI + k) * x / (Math.PI + k * Math.abs(x));
     }
     return curve;
@@ -196,30 +199,28 @@ export class AudioEngine {
     const n = this.nodes;
     const now = this.ctx.currentTime;
     
-    // REFINED: Adaptive Hiss Logic
-    // Shifts center frequency slightly and narrows Q as suppression increases for surgical removal
-    const adaptiveHissFreq = 11500 + (settings.hissSuppression * 10); 
-    const adaptiveHissQ = 1.4 + (settings.hissSuppression * 0.015);
-    const adaptiveHissGain = -settings.hissSuppression * 0.18;
-
-    n.hissFilter.frequency.setTargetAtTime(adaptiveHissFreq, now, 0.02);
-    n.hissFilter.Q.setTargetAtTime(adaptiveHissQ, now, 0.02);
+    // Adaptive Hiss & Noise Floor logic
+    const adaptiveHissGain = -settings.hissSuppression * 0.2;
     n.hissFilter.gain.setTargetAtTime(adaptiveHissGain, now, 0.02);
+    
+    // Downward expander reduces noise floor when signal is low (hiss reduction)
+    n.noiseExpander.ratio.setTargetAtTime(1 + (settings.hissSuppression / 25), now, 0.02);
+    n.noiseExpander.threshold.setTargetAtTime(-60 + (settings.hissSuppression / 5), now, 0.02);
 
-    n.crackleFilter.frequency.setTargetAtTime(2000 + (settings.clickSensitivity * 50), now, 0.02);
-    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3), now, 0.02);
+    // Crackle Suppression (3.2kHz band is where surface clicks often peak)
+    n.crackleFilter.gain.setTargetAtTime(-(settings.crackleSuppression * 0.25), now, 0.02);
     
     n.humNotch.frequency.setTargetAtTime(settings.humRemoval ? settings.humFrequency : 0.01, now, 0.02);
     
     n.bassFilter.gain.setTargetAtTime(settings.bassBoost, now, 0.02);
     n.midFilter.gain.setTargetAtTime(settings.midGain, now, 0.02);
     n.airFilter.gain.setTargetAtTime(settings.airGain, now, 0.02);
-    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.1, now, 0.02);
     
-    // De-Reverb intensity (increase compression ratio for tails)
-    n.deReverbGate.ratio.setTargetAtTime(1 + (settings.deReverb * 0.15), now, 0.02);
+    // Spectral Air (reconstructing lost harmonics)
+    n.spectralExciter.gain.setTargetAtTime(settings.spectralSynth * 0.15, now, 0.02);
     
-    // Stereo Width logic
+    n.deReverbGate.ratio.setTargetAtTime(1 + (settings.deReverb * 0.2), now, 0.02);
+    
     const width = settings.stereoWidth / 100;
     n.midGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : 1.0, now, 0.02);
     n.sideGainNode.gain.setTargetAtTime(settings.monoToggle ? 0.5 : width, now, 0.02);
@@ -239,21 +240,19 @@ export class AudioEngine {
     const source = offlineCtx.createBufferSource();
     source.buffer = buffer;
 
-    // Adaptive Offline Path
-    const adaptiveHissFreq = 11500 + (settings.hissSuppression * 10);
-    const adaptiveHissQ = 1.4 + (settings.hissSuppression * 0.015);
-    const adaptiveHissGain = -settings.hissSuppression * 0.18;
-
     const hiss = offlineCtx.createBiquadFilter();
     hiss.type = 'peaking';
-    hiss.frequency.value = adaptiveHissFreq;
-    hiss.Q.value = adaptiveHissQ;
-    hiss.gain.value = adaptiveHissGain;
+    hiss.frequency.value = 11500;
+    hiss.gain.value = -settings.hissSuppression * 0.2;
+
+    const exp = offlineCtx.createDynamicsCompressor();
+    exp.threshold.value = -60 + (settings.hissSuppression / 5);
+    exp.ratio.value = 1 + (settings.hissSuppression / 25);
 
     const crackle = offlineCtx.createBiquadFilter();
     crackle.type = 'peaking';
-    crackle.frequency.value = 2000 + (settings.clickSensitivity * 50);
-    crackle.gain.value = -(settings.crackleSuppression * (settings.clickIntensity / 100) * 0.3);
+    crackle.frequency.value = 3200;
+    crackle.gain.value = -(settings.crackleSuppression * 0.25);
 
     const bass = offlineCtx.createBiquadFilter();
     bass.type = 'lowshelf'; bass.frequency.value = 150;
@@ -268,31 +267,27 @@ export class AudioEngine {
     air.gain.value = settings.airGain;
 
     const spectral = offlineCtx.createBiquadFilter();
-    spectral.type = 'peaking'; spectral.frequency.value = 15000;
-    spectral.gain.value = settings.spectralSynth * 0.1;
+    spectral.type = 'peaking'; spectral.frequency.value = 15500;
+    spectral.gain.value = settings.spectralSynth * 0.15;
 
     const sat = offlineCtx.createWaveShaper();
     sat.curve = this.makeWarmthCurve(settings.warmth);
-
-    const rev = offlineCtx.createDynamicsCompressor();
-    rev.threshold.value = -30;
-    rev.ratio.value = 1 + (settings.deReverb * 0.15);
 
     const lim = offlineCtx.createDynamicsCompressor();
     lim.threshold.value = -0.5;
 
     const master = offlineCtx.createGain();
-    master.gain.value = Math.pow(10, settings.masterGain / 20) * 0.8; // Headroom safety
+    master.gain.value = Math.pow(10, settings.masterGain / 20) * 0.8;
 
-    source.connect(hiss);
+    source.connect(exp);
+    exp.connect(hiss);
     hiss.connect(crackle);
     crackle.connect(bass);
     bass.connect(mid);
     mid.connect(air);
     air.connect(spectral);
     spectral.connect(sat);
-    sat.connect(rev);
-    rev.connect(lim);
+    sat.connect(lim);
     lim.connect(master);
     master.connect(offlineCtx.destination);
 
@@ -324,7 +319,7 @@ export class AudioEngine {
     writeString(8, 'WAVE');
     writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
+    view.setUint16(20, 1, true);
     view.setUint16(22, numChannels, true);
     view.setUint32(24, sampleRate, true);
     view.setUint32(28, byteRate, true);
