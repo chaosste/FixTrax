@@ -1,10 +1,8 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { AudioSettings } from "../types";
+import { generateContent } from "./proxyService";
 
 export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<AudioSettings>> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
   const prompt = `
     Analyze this vinyl-derived audio track: "${trackName}".
     
@@ -26,7 +24,7 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: {
