@@ -19,5 +19,20 @@
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
-  }
+  },
+  "description": "Professional vinyl restoration suite with AI-driven DSP for clicks, rumble, and hiss removal",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chaosste/FixTrax"
+  },
+  "keywords": [
+    "audio-processing",
+    "vinyl-restoration",
+    "web-audio-api",
+    "dsp",
+    "noise-reduction",
+    "react"
+  ],
+  "author": "Stephen Beale",
+  "license": "MIT"
 }
