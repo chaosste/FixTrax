@@ -84,8 +84,15 @@ const App: React.FC = () => {
   useEffect(() => {
     engineRef.current = new AudioEngine();
     const saved = localStorage.getItem('vrevive_presets');
-    if (saved) setPresets(JSON.parse(saved));
-    else setPresets(FACTORY_PRESETS);
+    if (saved) {
+      try {
+        setPresets(JSON.parse(saved));
+      } catch {
+        setPresets(FACTORY_PRESETS);
+      }
+    } else {
+      setPresets(FACTORY_PRESETS);
+    }
     return () => engineRef.current?.stop();
   }, []);
 
@@ -114,20 +121,26 @@ const App: React.FC = () => {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const track: Track = {
-        id: Math.random().toString(36).substr(2, 9),
+        id: crypto.randomUUID(),
         name: file.name,
         originalBlob: file,
         status: 'idle'
       };
       newTracks.push(track);
     }
-    setTracks(prev => [...prev, ...newTracks]);
-    if (!activeTrackId && newTracks.length > 0) handleSelectTrack(newTracks[0].id);
+    setTracks((prev) => {
+      const updated = [...prev, ...newTracks];
+      if (!activeTrackId && newTracks.length > 0) {
+        const firstNewTrack = newTracks[0];
+        setActiveTrackId(firstNewTrack.id);
+      }
+      return updated;
+    });
   };
 
   const handleSelectTrack = async (id: string) => {
     setActiveTrackId(id);
-    const track = tracks.find(t => t.id === id);
+    const track = tracks.find((t) => t.id === id);
     if (track && !track.originalBuffer) {
       setTracks(prev => prev.map(t => t.id === id ? { ...t, status: 'processing' } : t));
       const buffer = await engineRef.current?.loadAudio(track.originalBlob);
@@ -138,6 +151,28 @@ const App: React.FC = () => {
     setIsPlaying(false);
     engineRef.current?.stop();
   };
+
+  useEffect(() => {
+    if (!activeTrackId) return;
+    const track = tracks.find((candidate) => candidate.id === activeTrackId);
+    if (!track || track.originalBuffer) return;
+
+    let cancelled = false;
+    setTracks((prev) => prev.map((candidate) => (
+      candidate.id === activeTrackId ? { ...candidate, status: 'processing' } : candidate
+    )));
+
+    engineRef.current?.loadAudio(track.originalBlob).then((buffer) => {
+      if (cancelled || !buffer) return;
+      setTracks((prev) => prev.map((candidate) => (
+        candidate.id === activeTrackId ? { ...candidate, originalBuffer: buffer, status: 'idle' } : candidate
+      )));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrackId, tracks]);
 
   const togglePlayback = () => {
     if (!activeTrack?.originalBuffer) return;

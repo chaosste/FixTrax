@@ -2,6 +2,28 @@ import { Type } from "@google/genai";
 import { AudioSettings } from "../types";
 import { generateContent } from "./proxyService";
 
+const clamp = (value: unknown, min: number, max: number, fallback: number) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+};
+
+const sanitizeAiSettings = (raw: Partial<AudioSettings>): Partial<AudioSettings> => ({
+  hissSuppression: clamp(raw.hissSuppression, 0, 100, 25),
+  crackleSuppression: clamp(raw.crackleSuppression, 0, 100, 20),
+  clickSensitivity: clamp(raw.clickSensitivity, 0, 100, 25),
+  transientRecovery: clamp(raw.transientRecovery, 0, 100, 35),
+  bassBoost: clamp(raw.bassBoost, -10, 10, 2),
+  midGain: clamp(raw.midGain, -10, 10, 0),
+  airGain: clamp(raw.airGain, -10, 10, 5),
+  warmth: clamp(raw.warmth, 0, 100, 20),
+  deReverb: clamp(raw.deReverb, 0, 100, 0),
+  stereoWidth: clamp(raw.stereoWidth, 0, 200, 115),
+  aiInsight:
+    typeof raw.aiInsight === "string" && raw.aiInsight.trim().length > 0
+      ? raw.aiInsight
+      : "VinylRevive: Applied conservative restoration profile."
+});
+
 export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<AudioSettings>> => {
   const prompt = `
     Analyze this vinyl-derived audio track: "${trackName}".
@@ -56,10 +78,11 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
 
     const text = response.text;
     if (!text) throw new Error("Empty response from AI");
-    return JSON.parse(text.trim());
+    const parsed = JSON.parse(text.trim()) as Partial<AudioSettings>;
+    return sanitizeAiSettings(parsed);
   } catch (error) {
     console.error("Vinyl AI Analysis failed:", error);
-    return {
+    return sanitizeAiSettings({
       hissSuppression: 25,
       crackleSuppression: 20,
       transientRecovery: 35,
@@ -67,6 +90,6 @@ export const analyzeTrackWithAI = async (trackName: string): Promise<Partial<Aud
       airGain: 5,
       stereoWidth: 115,
       aiInsight: "VinylRevive: Applied emergency de-hiss profile (Fallback active)."
-    };
+    });
   }
 };
